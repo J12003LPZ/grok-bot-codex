@@ -64,6 +64,12 @@ start() {
       echo "pulling Grok Bot computer image (first run is several GB)..."
       docker pull "$IMAGE"
     fi
+    # Git Bash/MSYS rewrites any argument that looks like a POSIX path (it turned
+    # /shim-state/... into C:/Program Files/Git/shim-state/...). Turn that off and
+    # hand docker a mixed-style host path (C:/Users/...) for the bind mount.
+    export MSYS2_ARG_CONV_EXCL='*'
+    STATE_MOUNT="$ROOT/state"
+    if command -v cygpath >/dev/null 2>&1; then STATE_MOUNT="$(cygpath -m "$ROOT/state")"; fi
     docker run -d \
       --name "$CONTAINER" \
       --restart unless-stopped \
@@ -81,7 +87,7 @@ start() {
       -e SAND_GATEWAY_BIND_HOST=0.0.0.0 \
       -e SAND_GATEWAY_TOKEN="$GATEWAY_TOKEN" \
       -e SAND_DEV_INFERENCE_TOKEN_FILE=/shim-state/host-token.json \
-      -v "$ROOT/state:/shim-state:ro" \
+      -v "$STATE_MOUNT:/shim-state:ro" \
       -v grokbot-computer-workspace:/workspace \
       -v grokbot-computer-chrome:/home/box/chrome-profile \
       -v grokbot-computer-data:/home/box/sand-data \

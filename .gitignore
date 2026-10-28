@@ -13,6 +13,7 @@ node_modules/
 # Generated from the locally installed Grok Bot application
 host/
 certs/
+generated/
 
 # Runtime state
 appdata/
