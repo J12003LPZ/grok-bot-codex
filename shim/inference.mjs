@@ -73,10 +73,14 @@ function loadModelsConfig() {
   }
 }
 
+// The desktop asks for its built-in model ids (e.g. "grok-4.5") whatever the
+// model list says, so models.json maps those through "aliases". Ids that are
+// neither a model nor an alias still fail closed.
 export function resolveModel(req) {
   const cfg = loadModelsConfig();
   const wanted = req.modelId || req.requestedModel?.modelId || cfg.default;
-  const entry = cfg.models[wanted];
+  const target = Object.hasOwn(cfg.models, wanted) ? wanted : cfg.aliases?.[wanted];
+  const entry = target === undefined || !Object.hasOwn(cfg.models, target) ? undefined : cfg.models[target];
   if (!entry) throw new Error(`unsupported model: ${wanted}`);
   return { wanted, entry };
 }

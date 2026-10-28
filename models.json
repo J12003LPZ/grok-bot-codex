@@ -1,5 +1,15 @@
 {
   "default": "GPT-5.6-Luna (Codex)",
+  "aliases": {
+    "grok-4.5": "GPT-5.6-Luna (Codex)",
+    "grok-4.5-high": "GPT-5.6-Luna (Codex)",
+    "grok-4.5-xhigh": "GPT-5.6-Luna (Codex)",
+    "grok-4.5-medium": "GPT-5.6-Terra (Codex)",
+    "grok-4.5-fast-high": "GPT-5.6-Sol (Codex)",
+    "grok-4.5-fast-xhigh": "GPT-5.6-Sol (Codex)",
+    "grok-4.5-fast-medium": "GPT-5.6-Sol (Codex)",
+    "grok-4.6": "GPT-5.6-Luna (Codex)"
+  },
   "models": {
     "GPT-5.6-Sol (Codex)": {
       "provider": "codex-oauth",

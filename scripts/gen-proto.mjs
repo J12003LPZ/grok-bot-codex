@@ -4,6 +4,7 @@
 // classes/enums that "#n" refers to. Nothing from the app is committed: the
 // output goes to a git-ignored directory and is rebuilt per installed version.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -173,14 +174,35 @@ export function generate(mod, { services } = {}) {
   return { proto: out.join("\n"), rpcs, messageCount: messages.length, enumCount: enumNames.size };
 }
 
-const isMain = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+function defaultAsar() {
+  const candidates = [
+    process.env.GROKBOT_RESOURCES && path.join(process.env.GROKBOT_RESOURCES, "app.asar"),
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "Programs", "Grok Bot", "resources", "app.asar"),
+    "/opt/Grok Bot/resources/app.asar",
+  ];
+  return candidates.find((c) => c && fs.existsSync(c));
+}
+
+// proto.cjs lives inside the app's asar. Extract just that file into a fresh
+// temp directory (never into the repo, and never executed from the cwd).
+async function extractProto(asarPath) {
+  const asar = await import("@electron/asar");
+  const extractFile = asar.extractFile ?? asar.default?.extractFile;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grokbot-proto-"));
+  fs.writeFileSync(path.join(dir, "proto.cjs"), extractFile(asarPath, path.join("dist", "electron-main", "proto.cjs")));
+  return path.join(dir, "proto.cjs");
+}
+
+const isMain =process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
 if (isMain) {
-  const [protoCjs, outDir = "generated"] = process.argv.slice(2);
-  if (!protoCjs) {
-    console.error("usage: node scripts/gen-proto.mjs <path/to/proto.cjs> [outDir]");
+  const [inputArg, outDir = "generated"] = process.argv.slice(2);
+  const input = inputArg ?? defaultAsar();
+  if (!input) {
+    console.error("usage: node scripts/gen-proto.mjs <app.asar | proto.cjs> [outDir]");
     process.exit(2);
   }
-  const mod = createRequire(import.meta.url)(path.resolve(protoCjs));
+  const protoCjs = input.endsWith(".asar") ? await extractProto(input) : path.resolve(input);
+  const mod = createRequire(import.meta.url)(protoCjs);
   const { proto, rpcs, messageCount, enumCount } = generate(mod);
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(path.join(outDir, "app.proto"), proto);

@@ -260,7 +260,15 @@ test("preserves custom tools, file inputs, and cancellation", async (t) => {
 
 test("unsupported models fail closed and log summaries contain no prompt text", () => {
   assert.throws(() => resolveModel({ modelId: "not-a-configured-model" }), /unsupported model/);
+  assert.throws(() => resolveModel({ modelId: "toString" }), /unsupported model/);
   assert.doesNotMatch(requestSummary({ modelId: "model", tools: [], messages: [{ role: 1, text: "private prompt" }] }), /private prompt/);
+});
+
+test("the desktop's built-in model ids resolve to Codex models through aliases", () => {
+  const { entry } = resolveModel({ modelId: "grok-4.5" });
+  assert.equal(entry.provider, "codex-oauth");
+  assert.equal(resolveModel({ modelId: "grok-4.5-medium" }).entry.model, "gpt-5.6-terra");
+  assert.equal(resolveModel({ modelId: "grok-4.5-fast-high" }).entry.model, "gpt-5.6-sol");
 });
 
 test("account model catalog and reasoning effort are validated before inference", async (t) => {

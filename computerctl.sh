@@ -68,6 +68,9 @@ start() {
     # /shim-state/... into C:/Program Files/Git/shim-state/...). Turn that off and
     # hand docker a mixed-style host path (C:/Users/...) for the bind mount.
     export MSYS2_ARG_CONV_EXCL='*'
+    # SAND_BOX_AUTO_UPDATE=0 keeps the host bundle baked into the image. Without
+    # it the supervisor swaps in the newest published host on boot, and hosts
+    # from ce1748b on refuse every local ("box") turn, so nothing would run here.
     STATE_MOUNT="$ROOT/state"
     if command -v cygpath >/dev/null 2>&1; then STATE_MOUNT="$(cygpath -m "$ROOT/state")"; fi
     docker run -d \
@@ -82,6 +85,7 @@ start() {
       -p 127.0.0.1:8550:8550 \
       --add-host=host.docker.internal:host-gateway \
       -e SAND_SUPERVISOR_ENABLED=1 \
+      -e SAND_BOX_AUTO_UPDATE=0 \
       -e SAND_BACKEND_URL="http://host.docker.internal:${SHIM_HTTP_PORT}" \
       -e SAND_HOST_PORT=8550 \
       -e SAND_GATEWAY_BIND_HOST=0.0.0.0 \

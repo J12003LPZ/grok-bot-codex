@@ -9,6 +9,8 @@
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "auth": "node shim/auth.mjs",
+    "gen-proto": "node scripts/gen-proto.mjs",
+    "windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/grokbot-windows.ps1",
     "doctor": "node scripts/doctor.mjs",
     "check": "node scripts/check.mjs",
     "test": "node --test test/*.test.mjs"

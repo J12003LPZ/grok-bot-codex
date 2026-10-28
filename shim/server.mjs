@@ -9,6 +9,17 @@ import { decodeStreamRequest, runSession, requestSummary } from "./inference.mjs
 import { encodeAvailableModels } from "./models.mjs";
 import { boxConfig, encodeEnsureSandBox, encodeRunState } from "./sandbox.mjs";
 import { checkLoopbackRequest } from "./guard.mjs";
+import { AgentStore } from "./agents.mjs";
+import { agentHandlers } from "./handlers.mjs";
+import { RpcError, callerOf, createRpc, loadGenerated } from "./rpc.mjs";
+import { clientLogHandlers } from "./client-log.mjs";
+
+// Typed RPCs need the schema generated from the installed app. Without it the
+// server still runs; those calls fall back to empty replies.
+const generated = loadGenerated();
+const handlers = { ...agentHandlers(new AgentStore()), ...clientLogHandlers(process.env.SHIM_CLIENT_LOG) };
+const rpc = generated ? createRpc({ ...generated, handlers }) : null;
+if (!generated) console.log("no generated/app.proto: run `npm run gen-proto -- <path to proto.cjs>` for agent RPCs");
 import { statsigBootstrap } from "./statsig.mjs";
 
 // Connect streaming requires the trailing frame (flag 0x02) to carry a JSON
@@ -215,6 +226,21 @@ const handle = async (req, res) => {
           }
           res.end(CONNECT_END_FRAME);
           out = `inference ${n} frames`;
+        }
+      } else if (rpc?.handles(pathname) && ct.includes("application/proto")) {
+        const method = pathname.split("/").pop();
+        const caller = callerOf(req);
+        cors(res);
+        try {
+          const payload = await rpc.unary(pathname, body, { caller });
+          res.writeHead(200, { "content-type": "application/proto" });
+          res.end(payload);
+          out = `rpc ${method} ${payload.length}B (${caller})`;
+        } catch (err) {
+          if (!(err instanceof RpcError)) throw err;
+          res.writeHead(err.httpStatus, { "content-type": "application/json" });
+          res.end(err.body());
+          out = `rpc ${method} ${err.code} (${caller})`;
         }
       } else if (MODE === "forward") {
         out = await forward(req, p, body, res);

@@ -13,9 +13,12 @@ required runtime files from the user's installed copy of Grok Bot.
 
 ## Status
 
+Windows: the installed Grok Bot 0.75.8 completes onboarding and answers chat
+through the ChatGPT plan, end to end. See [Windows](#windows).
+
 The inference adapter is covered by offline tests and a live subscription
-request. A compatible Grok Bot host runtime is still required to launch the
-complete desktop agent.
+request. On Linux a compatible Grok Bot host runtime is still required to
+launch the complete desktop agent.
 
 Known compatibility blocker in this environment: the official Grok Bot Linux
 0.77.0 package and the installed Windows builds do not contain the legacy
@@ -57,9 +60,8 @@ documented plan-usage flow requires a separate user-approved grant with the
 flow and stores a separate credential under `~/.codex/grokbot-shim/`; it never
 reads or overwrites `~/.codex/auth.json`.
 
-Windows is not a supported host for the desktop stack. Use WSL2/Linux with a
-Linux Grok Bot build and a running Docker Linux engine; a Windows `.exe` cannot
-be used as the Linux host runtime.
+On Windows, the installed Grok Bot 0.75.8 runs against the shim with Docker
+Desktop and Git for Windows. See [Windows](#windows).
 
 The default paths expect the executable at `/opt/Grok Bot/grok-bot`. Override
 `GROKBOT_APP` and `GROKBOT_RESOURCES` when the application is installed
@@ -128,6 +130,9 @@ catalog before an inference request.
   }
 }
 ```
+
+`aliases` maps model ids the app requests on its own (such as `grok-4.5`) to
+an entry in `models`.
 
 The model catalog contains only verified OpenAI model IDs. Inference errors,
 authentication failures, and plan limits are returned to Grok Bot; there is no
@@ -230,15 +235,48 @@ or enabled by default; the direct SIWC-to-Responses path is the tested mode.
   against that build. Supporting it needs a host bridge adapted and tested
   against the current package.
 
-## Windows and Linux support
+## Windows
 
-The current checkout is designed for Linux. `npm run doctor` reports platform
-prerequisites without changing the installation. On Windows, install WSL2,
-enable Docker Desktop's Linux engine integration for the chosen WSL distro,
-and install the Linux Grok Bot desktop build inside that distro. The native
-Windows build, Docker Desktop's stopped engine, and an absent Grok Bot
-installation cannot run this stack. Do not run `npm run setup` until the
-required Linux application files are installed.
+Verified with the installed Windows Grok Bot 0.75.8, Docker Desktop and Git for
+Windows. Chat turns run in the local box and their inference goes to your
+ChatGPT plan; no Grok Bot subscription is used.
+
+```powershell
+npm ci
+npm run auth      # once: Sign in with ChatGPT
+npm run windows   # shim + box + app
+```
+
+`npm run windows` runs `scripts/grokbot-windows.ps1`, which:
+
+1. builds `generated/` (message schemas read from the installed app's
+   `app.asar`; nothing from the app is committed);
+2. starts the shim on `http://localhost:8444` (loopback only, log in
+   `state/shim.log`);
+3. starts the box container with `computerctl.sh`;
+4. opens Grok Bot in its own profile (`%LOCALAPPDATA%\grokbot-shim\profile`)
+   with a local dev sign-in.
+
+How 0.75.8 is wired:
+
+- The agent host runs inside the box image, not in the app. The container is
+  started with `SAND_BOX_AUTO_UPDATE=0` so it keeps the host baked into the
+  image (1b18a85). Without it the supervisor downloads the newest published
+  host, and hosts from ce1748b on refuse every local turn because chat moved
+  to the vendor's servers.
+- The shim stands in for the backend calls the app needs: sandbox URLs, the
+  Bot roster (`state/agents.json`) and the inference stream.
+- The app first asks the backend for a server-run Bot. The shim answers
+  Unimplemented, so the app creates the Bot on the local box host instead.
+- The app requests its built-in model ids (`grok-4.5` and variants).
+  `models.json` maps them to Codex models through `aliases`; unknown ids still
+  fail closed.
+
+Set `SHIM_CLIENT_LOG=<file>` before starting the shim to write the app's own
+log lines (normally sent to the vendor through `SubmitLogs`) to a local file.
+
+The Linux flow below is unchanged. `npm run doctor` reports platform
+prerequisites without changing the installation.
 
 ## Troubleshooting
 
