@@ -13,6 +13,14 @@ import { AgentStore } from "./agents.mjs";
 import { agentHandlers } from "./handlers.mjs";
 import { RpcError, callerOf, createRpc, loadGenerated } from "./rpc.mjs";
 import { clientLogHandlers } from "./client-log.mjs";
+import { createBoxController } from "./box.mjs";
+
+// Starts the box container on demand (EnsureSandBox). SHIM_BOX_AUTOSTART=0
+// leaves it to computerctl.sh and reports it as always running.
+const box =
+  process.env.SHIM_BOX_AUTOSTART === "0"
+    ? { state: async () => "running", ensure: async () => "running" }
+    : createBoxController({ gatewayUrl: process.env.SHIM_BOX_GATEWAY_URL ?? "http://127.0.0.1:8550" });
 
 // Typed RPCs need the schema generated from the installed app. Without it the
 // server still runs; those calls fall back to empty replies.
@@ -188,17 +196,19 @@ const handle = async (req, res) => {
         res.end(payload);
         out = `available-models ${payload.length}B`;
       } else if (pathname === "/aiserver.v1.GrokBotService/EnsureSandBox") {
-        const payload = encodeEnsureSandBox(boxConfig());
+        const state = await box.ensure();
+        const payload = encodeEnsureSandBox(boxConfig(), state);
         cors(res);
         res.writeHead(200, { "content-type": "application/proto" });
         res.end(payload);
-        out = `ensure-sandbox ${payload.length}B`;
+        out = `ensure-sandbox ${state}`;
       } else if (pathname === "/aiserver.v1.GrokBotService/GetSandBoxRunState") {
-        const payload = encodeRunState();
+        const state = await box.state();
+        const payload = encodeRunState(state);
         cors(res);
         res.writeHead(200, { "content-type": "application/proto" });
         res.end(payload);
-        out = "sandbox-run-state RUNNING";
+        out = `sandbox-run-state ${state}`;
       } else if (pathname === "/aiserver.v1.InferenceService/Stream") {
         cors(res);
         const msgFrames = parseConnectFrames(body).filter((f) => f.flags === 0);

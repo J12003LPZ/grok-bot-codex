@@ -7,7 +7,22 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const root = protobuf.loadSync(path.join(ROOT, "shim", "sandbox.proto"));
 const EnsureSandBoxResponse = root.lookupType("aiserver.v1.EnsureSandBoxResponse");
 const GetSandBoxRunStateResponse = root.lookupType("aiserver.v1.GetSandBoxRunStateResponse");
-const RUNNING = root.lookupEnum("aiserver.v1.SandBoxRunState").values.RUNNING;
+const RUN_STATE = root.lookupEnum("aiserver.v1.SandBoxRunState").values;
+
+// box.mjs state -> the app's SandBoxRunState. A stopped container is what the
+// app calls hibernated: it shows "waking" and keeps polling.
+const BOX_STATE = {
+  absent: RUN_STATE.ABSENT,
+  stopped: RUN_STATE.HIBERNATED,
+  starting: RUN_STATE.STARTING,
+  running: RUN_STATE.RUNNING,
+};
+
+function runStateOf(boxState) {
+  const value = BOX_STATE[boxState];
+  if (value === undefined) throw new Error(`unknown box state: ${boxState}`);
+  return value;
+}
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
@@ -55,7 +70,7 @@ function decode(type, bytes) {
   return type.toObject(type.decode(bytes), { defaults: true, enums: String });
 }
 
-export function encodeEnsureSandBox(cfg = boxConfig()) {
+export function encodeEnsureSandBox(cfg = boxConfig(), boxState = "running") {
   return encode(EnsureSandBoxResponse, {
     cluster: cfg.cluster,
     tenantId: cfg.tenantId,
@@ -67,12 +82,12 @@ export function encodeEnsureSandBox(cfg = boxConfig()) {
     gatewayUrl: cfg.gatewayUrl,
     gatewayToken: cfg.gatewayToken,
     imageUpdateAvailable: false,
-    runState: RUNNING,
+    runState: runStateOf(boxState),
   });
 }
 
-export function encodeRunState() {
-  return encode(GetSandBoxRunStateResponse, { state: RUNNING, imageUpdateAvailable: false });
+export function encodeRunState(boxState = "running") {
+  return encode(GetSandBoxRunStateResponse, { state: runStateOf(boxState), imageUpdateAvailable: false });
 }
 
 export const decodeEnsureSandBox = (bytes) => decode(EnsureSandBoxResponse, bytes);

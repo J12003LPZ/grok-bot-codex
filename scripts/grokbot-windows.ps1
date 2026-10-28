@@ -1,8 +1,8 @@
 # Runs the installed Windows Grok Bot on your ChatGPT plan.
-#   1. builds generated/ from the installed app if it is missing,
+#   1. builds generated/ from the installed app if it is missing or older,
 #   2. starts the shim (http://localhost:8444) if nothing listens there,
-#   3. starts the local box container (computerctl.sh),
-#   4. opens Grok Bot in its own profile against the shim.
+#   3. opens Grok Bot in its own profile against the shim.
+# The shim starts the box container (computerctl.sh) when the app asks for it.
 # Run `npm run auth` once first. Usage: powershell -File scripts\grokbot-windows.ps1
 param(
   [string]$App = "$env:LOCALAPPDATA\Programs\Grok Bot\Grok Bot.exe",
@@ -17,30 +17,41 @@ $Root = Split-Path -Parent $PSScriptRoot
 
 if (-not (Test-Path $App)) { throw "Grok Bot not found at $App (pass -App <path to Grok Bot.exe>)" }
 
-if (-not (Test-Path (Join-Path $Root "generated\app.proto"))) {
-  & node (Join-Path $Root "scripts\gen-proto.mjs") (Join-Path (Split-Path $App) "resources\app.asar") (Join-Path $Root "generated")
+# Rebuild the schema whenever the installed app is newer than it (an app
+# update ships new messages). A running shim keeps the old schema until it
+# restarts, so restart it too.
+$asar = Join-Path (Split-Path $App) "resources\app.asar"
+$proto = Join-Path $Root "generated\app.proto"
+$staleSchema = -not (Test-Path $proto) -or (Get-Item $asar).LastWriteTime -gt (Get-Item $proto).LastWriteTime
+if ($staleSchema) {
+  & node (Join-Path $Root "scripts\gen-proto.mjs") $asar (Join-Path $Root "generated")
   if ($LASTEXITCODE -ne 0) { throw "gen-proto failed" }
+  Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+    ForEach-Object { Get-CimInstance Win32_Process -Filter "ProcessId=$($_.OwningProcess)" } |
+    Where-Object { $_.CommandLine -like "*shim*server.mjs*" } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -Confirm:$false }
 }
 
 $listening = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
 if (-not $listening) {
   $log = Join-Path $Root "state\shim.log"
   New-Item -ItemType Directory -Force (Split-Path $log) | Out-Null
-  $env:HTTP_PORT = "$Port"
-  Start-Process node -ArgumentList "`"$(Join-Path $Root 'shim\server.mjs')`"" -WorkingDirectory $Root `
-    -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+  # Win32_Process.Create, not Start-Process: a Start-Process child inherits this
+  # console's handles and keeps a caller's output pipe open after we exit.
+  $node = (Get-Command node -ErrorAction Stop).Source
+  $cmd = "cmd.exe /c set HTTP_PORT=$Port&& `"$node`" `"$(Join-Path $Root 'shim\server.mjs')`" >> `"$log`" 2>&1"
+  $made = Invoke-CimMethod Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd; CurrentDirectory = $Root }
+  if ($made.ReturnValue -ne 0) { throw "could not start the shim (Win32_Process.Create returned $($made.ReturnValue))" }
   for ($i = 0; $i -lt 30 -and -not (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue); $i++) {
     Start-Sleep -Milliseconds 500
   }
-  if (-not (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)) { throw "shim did not start; see $log.err" }
+  if (-not (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)) { throw "shim did not start; see $log" }
 }
 
-# Git Bash, not WSL's bash.exe: computerctl.sh drives Docker Desktop from Windows.
+# The shim starts the box container itself when the app asks for it
+# (EnsureSandBox), so it is not started here. It needs Git Bash for that.
 $bash = @("$env:ProgramFiles\Git\bin\bash.exe", "${env:ProgramFiles(x86)}\Git\bin\bash.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $bash) { throw "Git Bash not found; install Git for Windows" }
-$env:HTTP_PORT = "$Port"
-& $bash (Join-Path $Root "computerctl.sh") start
-if ($LASTEXITCODE -ne 0) { Write-Warning "box not ready yet; the app keeps retrying while it boots" }
 
 # Dev sign-in against a localhost backend: no Grok Bot subscription is involved.
 $env:SAND_BACKEND_URL = "http://localhost:$Port"
