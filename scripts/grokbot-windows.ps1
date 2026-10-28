@@ -7,7 +7,10 @@
 param(
   [string]$App = "$env:LOCALAPPDATA\Programs\Grok Bot\Grok Bot.exe",
   [string]$ProfileDir = "$env:LOCALAPPDATA\grokbot-shim\profile",
-  [int]$Port = 8444
+  [int]$Port = 8444,
+  # Turns off Chromium's renderer sandbox. Only needed when the Computer preview
+  # stays blank; leave it off otherwise.
+  [switch]$NoSandbox
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
@@ -44,6 +47,10 @@ $env:SAND_BACKEND_URL = "http://localhost:$Port"
 $env:SAND_DEV_LOGIN = "Ultra"
 $env:SAND_DEV_LOGIN_EMAIL = "shim@local"
 New-Item -ItemType Directory -Force $ProfileDir | Out-Null
-# --no-sandbox: the Computer preview webview renders blank without it.
-Start-Process $App -ArgumentList "--user-data-dir=`"$ProfileDir`"", "--no-sandbox"
+$appArgs = @("--user-data-dir=`"$ProfileDir`"")
+if ($NoSandbox) {
+  Write-Warning "starting with --no-sandbox: web content in the app runs without Chromium's sandbox"
+  $appArgs += "--no-sandbox"
+}
+Start-Process $App -ArgumentList $appArgs
 Write-Host "Grok Bot started against http://localhost:$Port (profile $ProfileDir)"

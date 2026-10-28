@@ -8,8 +8,13 @@ const ctl = fs.readFileSync(new URL("../computerctl.sh", import.meta.url), "utf8
 test("launcher points the app at the local shim with dev sign-in", () => {
   assert.match(ps1, /SAND_BACKEND_URL = "http:\/\/localhost:\$Port"/);
   assert.match(ps1, /SAND_DEV_LOGIN = "Ultra"/);
-  assert.match(ps1, /--no-sandbox/);
   assert.match(ps1, /--user-data-dir=/);
+});
+
+test("the renderer sandbox stays on unless -NoSandbox is passed", () => {
+  assert.match(ps1, /\[switch\]\$NoSandbox/);
+  assert.match(ps1, /if \(\$NoSandbox\) \{[^}]*"--no-sandbox"/s);
+  assert.equal(ps1.match(/--no-sandbox/g).length, 2); // the warning text and the guarded flag
 });
 
 test("launcher never disables TLS checks", () => {

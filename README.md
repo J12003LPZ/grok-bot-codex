@@ -272,6 +272,10 @@ How 0.75.8 is wired:
   `models.json` maps them to Codex models through `aliases`; unknown ids still
   fail closed.
 
+The app keeps Chromium's renderer sandbox on. If the Computer preview stays
+blank, run `powershell -File scripts\grokbot-windows.ps1 -NoSandbox`; that
+turns the sandbox off for all web content the app shows.
+
 Set `SHIM_CLIENT_LOG=<file>` before starting the shim to write the app's own
 log lines (normally sent to the vendor through `SubmitLogs`) to a local file.
 
