@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import protobuf from "protobufjs";
+import { loadOrCreateToken, STATE_DIR } from "./secrets.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const root = protobuf.loadSync(path.join(ROOT, "shim", "sandbox.proto"));
@@ -21,17 +22,26 @@ function loopbackUrl(name, value) {
 // The packaged app asks its backend for a cloud "box". Here the box is the
 // local container started by computerctl.sh, so the response simply names its
 // loopback endpoints.
-export function boxConfig(env = process.env) {
+function gatewayToken(env, stateDir) {
+  const fromEnv = env.SHIM_BOX_GATEWAY_TOKEN;
+  if (fromEnv === undefined) return loadOrCreateToken("gateway", stateDir);
+  if (fromEnv.length < 32) throw new Error("SHIM_BOX_GATEWAY_TOKEN must be at least 32 characters");
+  return fromEnv;
+}
+
+export function boxConfig(env = process.env, stateDir = STATE_DIR) {
   return {
     cluster: "local",
     tenantId: "local",
     podId: env.SHIM_BOX_POD_ID ?? "grokbot-computer",
     networkToken: env.SHIM_BOX_NETWORK_TOKEN ?? "shim-network-token",
     execDaemonUrl: loopbackUrl("SHIM_BOX_EXEC_URL", env.SHIM_BOX_EXEC_URL ?? "http://127.0.0.1:1337"),
+    // The exec daemon's token is fixed by the box image's start script
+    // (`--auth-token local`); the port is only published on 127.0.0.1.
     execDaemonAuthToken: env.SHIM_BOX_EXEC_TOKEN ?? "local",
     vncUrl: loopbackUrl("SHIM_BOX_VNC_URL", env.SHIM_BOX_VNC_URL ?? "http://127.0.0.1:6080/vnc.html"),
     gatewayUrl: loopbackUrl("SHIM_BOX_GATEWAY_URL", env.SHIM_BOX_GATEWAY_URL ?? "http://127.0.0.1:8550"),
-    gatewayToken: env.SHIM_BOX_GATEWAY_TOKEN ?? "shim-gateway-token",
+    gatewayToken: gatewayToken(env, stateDir),
   };
 }
 

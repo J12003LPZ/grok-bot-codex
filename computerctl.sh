@@ -6,7 +6,8 @@ CONTAINER="${GROKBOT_COMPUTER_CONTAINER:-grokbot-computer}"
 # The agent host runs inside this container (the box supervisor starts it) and
 # calls the shim over plain HTTP on the Docker host.
 SHIM_HTTP_PORT="${HTTP_PORT:-8444}"
-GATEWAY_TOKEN="${SAND_GATEWAY_TOKEN:-shim-gateway-token}"
+# Random per-install token under state/ (mode 0600); the shim reads the same file.
+GATEWAY_TOKEN="${SAND_GATEWAY_TOKEN:-$(node "$ROOT/shim/secrets.mjs" gateway)}"
 IMAGE="${GROKBOT_COMPUTER_IMAGE:-public.ecr.aws/k0i0n2g5/cursorenvironments/universal@sha256:dcac90cba36653f261988b1c88d11b7655493d455c4af0a18c5991ddaa5da020}"
 
 require_docker() {

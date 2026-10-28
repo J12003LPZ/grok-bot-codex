@@ -8,6 +8,7 @@ import { CONNECT_END_FRAME, envelope, parseConnectFrames } from "./connect.mjs";
 import { decodeStreamRequest, runSession, requestSummary } from "./inference.mjs";
 import { encodeAvailableModels } from "./models.mjs";
 import { boxConfig, encodeEnsureSandBox, encodeRunState } from "./sandbox.mjs";
+import { checkLoopbackRequest } from "./guard.mjs";
 import { statsigBootstrap } from "./statsig.mjs";
 
 // Connect streaming requires the trailing frame (flag 0x02) to carry a JSON
@@ -253,7 +254,16 @@ server.listen(PORT, "127.0.0.1", () => {
 // Windows resolves "localhost" to ::1 first, so listen on both stacks.
 const HTTP_PORT = Number(process.env.HTTP_PORT ?? 8444);
 for (const host of ["127.0.0.1", "::1"]) {
-  const plain = http.createServer(handle);
+  const plain = http.createServer((req, res) => {
+    const verdict = checkLoopbackRequest(req);
+    if (!verdict.ok) {
+      console.error(`[guard] refused ${req.method} ${(req.url ?? "/").split("?")[0].slice(0, 80)}: ${verdict.reason} (host=${String(req.headers.host).slice(0, 60)})`);
+      res.writeHead(verdict.status, { "content-type": "text/plain" });
+      res.end(verdict.reason);
+      return;
+    }
+    return handle(req, res);
+  });
   plain.on("error", (err) => {
     if (err.code !== "EADDRNOTAVAIL") console.error(`http listen ${host}: ${err.code ?? err.message}`);
   });
