@@ -1,10 +1,10 @@
 # grokbot-shim
 
-Run the Grok Bot desktop agent locally with a local computer desktop and a
-configurable model backend.
+Run the Grok Bot desktop agent locally with its original host agent loop and a
+ChatGPT plan model backend.
 
 The project connects the installed Grok Bot UI to its own local host runtime,
-translates the app's inference protocol to supported model providers, and runs
+translates the app's inference protocol to the ChatGPT plan backend, and runs
 the Computer environment on the same machine. The user can watch or take over
 the desktop through noVNC.
 
@@ -13,18 +13,34 @@ required runtime files from the user's installed copy of Grok Bot.
 
 ## Status
 
-Working on Linux:
+The inference adapter is covered by offline tests and a live subscription
+request. A compatible Grok Bot host runtime is still required to launch the
+complete desktop agent.
+
+Known compatibility blocker in this environment: the official Grok Bot Linux
+0.77.0 package and the installed Windows builds do not contain the legacy
+`dist/host/host-main.cjs` entrypoint this shim's `run-all.sh` host launcher
+expects. Setup detects this and stops before extraction. The 0.77.0 desktop UI
+can be opened in an isolated profile and its local dev sign-in can reach the
+shim, but this does not verify the new internal coordinator or restore the
+missing host gateway. No inference request from the desktop app has been
+observed yet. The current Linux package is available from the [official
+download page](https://cursor.com/download/bot); the new host integration must
+be adapted and tested before the complete agent loop can be claimed.
+
+When a compatible host runtime is installed, the intended integration supports:
 
 - local Grok Bot login and agent lifecycle;
 - streamed text, reasoning state, and tool calls;
-- Codex OAuth through an existing `codex login` session;
-- OpenAI-compatible `/chat/completions` providers;
+- OpenAI Sign in with ChatGPT through the public Responses API;
 - model selection in the app's Settings screen;
 - a local Chrome/XFCE Computer desktop with screenshots, input, and noVNC
   takeover.
 
-This relies on undocumented integration points and may require updates when
-the desktop application changes.
+The Grok Bot host and Connect protobuf integration rely on undocumented
+application protocol details and may require updates when the desktop app
+changes. The model path uses the documented Sign in with ChatGPT OAuth grant
+and public Responses API.
 
 ## Requirements
 
@@ -32,10 +48,20 @@ the desktop application changes.
 - Node.js 22.12 or newer;
 - Docker with a running daemon;
 - OpenSSL and curl;
-- an existing `codex login` session for Codex OAuth models, or an API key for
-  an OpenAI-compatible provider.
+- one-time authorization of Grok Bot with your ChatGPT account and permission
+  to use your ChatGPT plan. No API key is used.
 
-The default paths expect the executable at `/opt/Grok Bot/sand`. Override
+The current `codex login` credential is not automatically reused. OpenAI's
+documented plan-usage flow requires a separate user-approved grant with the
+`chatgpt.tokens.use.direct` scope. `npm run auth` opens that official sign-in
+flow and stores a separate credential under `~/.codex/grokbot-shim/`; it never
+reads or overwrites `~/.codex/auth.json`.
+
+Windows is not a supported host for the desktop stack. Use WSL2/Linux with a
+Linux Grok Bot build and a running Docker Linux engine; a Windows `.exe` cannot
+be used as the Linux host runtime.
+
+The default paths expect the executable at `/opt/Grok Bot/grok-bot`. Override
 `GROKBOT_APP` and `GROKBOT_RESOURCES` when the application is installed
 elsewhere.
 
@@ -45,8 +71,9 @@ elsewhere.
 git clone <your-repository-url>
 cd grokbot-shim
 npm ci
+npm run doctor
 npm run setup
-cp .env.example .env       # optional; add provider keys if needed
+npm run auth               # opens the official ChatGPT plan authorization
 ./run-all.sh
 ```
 
@@ -85,8 +112,9 @@ an untrusted network.
 
 ## Model configuration
 
-Models shown by the app are declared in `models.json`. The tracked default is
-GPT-5.6 Luna through Codex OAuth with Max reasoning:
+Models shown by the app are declared in `models.json`. The default is GPT-5.6
+Luna. The selected model is checked against the signed-in account's model
+catalog before an inference request.
 
 ```json
 {
@@ -96,32 +124,19 @@ GPT-5.6 Luna through Codex OAuth with Max reasoning:
       "provider": "codex-oauth",
       "model": "gpt-5.6-luna",
       "reasoning_effort": "max"
-    },
-    "Example API model": {
-      "provider": "openai-compatible",
-      "base_url": "https://openrouter.ai/api/v1",
-      "model": "provider/model-id",
-      "env_key": "OPENROUTER_API_KEY"
     }
   }
 }
 ```
 
-Never put API keys directly in `models.json`. Put them in `.env`, which is
-ignored by Git:
+The model catalog contains only verified OpenAI model IDs. Inference errors,
+authentication failures, and plan limits are returned to Grok Bot; there is no
+paid-provider fallback.
 
-```dotenv
-OPENROUTER_API_KEY=your-key-here
-```
-
-Provider support:
-
-- `codex-oauth` uses the ChatGPT subscription session stored by `codex login`;
-- `openai-compatible` uses a streaming `/chat/completions` API;
-- `canned` is an offline response stub for protocol testing.
-
-The optional `fallback` field names another model entry to use if a Codex
-request is rejected because authentication or quota is unavailable.
+Authorization credentials live outside the repository at
+`~/.codex/grokbot-shim/auth.json` (or under `CODEX_HOME`). The shim refreshes
+rotating OAuth tokens against OpenAI's documented token endpoint. Do not copy
+the credential file into the repo or send it to anyone.
 
 ## Commands
 
@@ -132,9 +147,15 @@ request is rejected because authentication or quota is unavailable.
 ./computerctl.sh logs        # show recent Computer logs
 ./shimctl.sh status          # inspect the backend shim
 ./shimctl.sh restart         # restart the backend shim
+npm run auth                 # authorize or refresh the separate ChatGPT grant
 npm run check                # syntax validation
 npm test                     # unit tests
 ```
+
+Press `Ctrl+C` in the `run-all.sh` terminal to close the UI and stop the host
+gateway and services the launcher started. Stop a separately started
+Computer container with `./computerctl.sh stop` and the shim with
+`./shimctl.sh stop`.
 
 For debugging, components can be started separately in different terminals:
 
@@ -147,7 +168,7 @@ For debugging, components can be started separately in different terminals:
 
 ## Repository layout
 
-- `shim/` — protocol definitions, inference adapters, model picker, and server;
+- `shim/` — protocol definitions, inference adapter, OAuth authorization, and server;
 - `scripts/setup.sh` — local certificate generation and app-runtime extraction;
 - `scripts/doctor.sh` — prerequisite and generated-file checks;
 - `models.json` — credential-free model catalog;
@@ -163,13 +184,61 @@ TLS keys and certificates, `appdata/`, `state/`, `logs/`, `node_modules/`, and
 
 The host sends `aiserver.v1.InferenceService/Stream` requests using the Connect
 protocol and binary protobuf messages. The shim decodes messages and the
-agent's tool schema, calls the configured provider, and streams compatible
-response frames back.
+agent's tool schema, calls `POST https://api.openai.com/v1/responses` with
+`store: false` and `stream: true`, then streams compatible protobuf response
+frames back. Client-side Grok Bot functions are sent through supported
+`additional_tools` items and executed only by the Grok Bot host. Prior tool
+results, images/screenshots, and opaque reasoning continuation data are
+preserved in later requests. OpenAI plan limits are shared with other apps
+using the same ChatGPT plan.
 
 Assistant text inside the host loop is private working text. To communicate
 with the user, a model must call the `SendMessage` tool supplied in the request.
-For that reason, provider models need reliable function calling, not only text
-generation.
+For that reason, the selected model needs reliable function calling, not only
+text generation.
+
+## CLIProxyAPI compatibility
+
+The shim already serves as the local protocol adapter: it translates Grok
+Bot's Connect/protobuf inference stream into the public Responses API and
+returns model, reasoning, and tool-call events to the Grok Bot harness. It
+uses the separate, officially authorized Sign in with ChatGPT credential
+described above. It does not read the Codex CLI credential file or require
+CLIProxyAPI.
+
+Do not point it at a multi-provider CLIProxyAPI instance unless that instance
+is configured with Codex as its sole inference credential and has no other
+provider fallback. CLIProxyAPI's automatic auth failover can route requests to
+another matching credential. A Codex-only proxy configuration is not shipped
+or enabled by default; the direct SIWC-to-Responses path is the tested mode.
+
+## Compatibility limits
+
+- The shim sends one Responses request for each Grok Bot inference turn. It does
+  not run Codex CLI's agent loop; Grok Bot remains responsible for planning,
+  browser/computer/shell tools, execution, and persistent history.
+- ChatGPT plan inference is in OpenAI's documented preview flow. Model
+  availability and account limits are checked by OpenAI at runtime. API-hosted
+  computer use, audio, and video are not used; Grok Bot's local computer tool
+  runs client-side and sends screenshots as image inputs.
+- The shim currently stores one ChatGPT plan registration. Use the same
+  account to reauthorize it; a different account needs its own credential
+  store.
+- The installed Grok Bot host protocol is undocumented and version-specific.
+  The 0.77.0 Linux package tested here no longer exposes the legacy local host
+  runtime this shim extracts, so the full harness cannot currently launch
+  against that build. Supporting it needs a host bridge adapted and tested
+  against the current package.
+
+## Windows and Linux support
+
+The current checkout is designed for Linux. `npm run doctor` reports platform
+prerequisites without changing the installation. On Windows, install WSL2,
+enable Docker Desktop's Linux engine integration for the chosen WSL distro,
+and install the Linux Grok Bot desktop build inside that distro. The native
+Windows build, Docker Desktop's stopped engine, and an absent Grok Bot
+installation cannot run this stack. Do not run `npm run setup` until the
+required Linux application files are installed.
 
 ## Troubleshooting
 
@@ -195,14 +264,15 @@ way to tell a preview problem from a Computer problem.
 
 - The isolated Grok Bot profile does not modify the default application
   profile.
-- Agent prompts and model responses may be sent to the provider selected in
-  `models.json`.
-- Runtime logs can contain prompts, tool arguments, filesystem paths, and
-  other sensitive data. Review and sanitize them before sharing.
+- Agent prompts, tool schemas, tool results, and screenshots are sent to
+  OpenAI's public Responses API using the ChatGPT plan grant.
+- Shim logs omit request headers, prompts, tool arguments, and response bodies.
 - The noVNC page provides control of the Computer desktop. Keep it bound to
   loopback.
 
-See `SECURITY.md` for vulnerability reporting guidance.
+See `SECURITY.md` for vulnerability reporting guidance. The plan-use
+integration is a documented public OAuth preview; account eligibility, model
+availability, and supported capabilities remain controlled by OpenAI.
 
 ## Contributing
 

@@ -1,51 +1,23 @@
+import http from "node:http";
 import https from "node:https";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mintJwt } from "./jwt.mjs";
+import { CONNECT_END_FRAME, envelope, parseConnectFrames } from "./connect.mjs";
 import { decodeStreamRequest, runSession, requestSummary } from "./inference.mjs";
 import { encodeAvailableModels } from "./models.mjs";
+import { boxConfig, encodeEnsureSandBox, encodeRunState } from "./sandbox.mjs";
 import { statsigBootstrap } from "./statsig.mjs";
-
-function parseConnectFrames(buf) {
-  const frames = [];
-  let off = 0;
-  while (off + 5 <= buf.length) {
-    const flags = buf[off];
-    const len = buf.readUInt32BE(off + 1);
-    if (off + 5 + len > buf.length) break;
-    frames.push({ flags, payload: buf.subarray(off + 5, off + 5 + len) });
-    off += 5 + len;
-  }
-  return frames;
-}
-
-function frameBytes(flags, payload) {
-  const header = Buffer.alloc(5);
-  header[0] = flags;
-  header.writeUInt32BE(payload.length, 1);
-  return Buffer.concat([header, payload]);
-}
 
 // Connect streaming requires the trailing frame (flag 0x02) to carry a JSON
 // EndStreamResponse. A zero-length payload makes the client throw
 // "failed to parse EndStreamResponse: invalid end stream".
-const CONNECT_END_FRAME = frameBytes(0x02, Buffer.from("{}", "utf8"));
-
-function envelope(payload) {
-  return frameBytes(0x00, payload);
-}
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = Number(process.env.PORT ?? 8443);
 const MODE = process.env.MODE ?? "stub"; // stub | forward
 const UPSTREAM = process.env.UPSTREAM ?? "https://api2.cursor.sh";
-const LOG_DIR = path.join(ROOT, "logs");
-fs.mkdirSync(LOG_DIR, { recursive: true });
-
-const stamp = new Date().toISOString().slice(0, 10);
-const jsonl = fs.createWriteStream(path.join(LOG_DIR, `capture-${stamp}.jsonl`), { flags: "a" });
-
 const STATE_DIR = path.join(ROOT, "state");
 fs.mkdirSync(STATE_DIR, { recursive: true });
 const HOST_TOKEN_FILE = path.join(STATE_DIR, "host-token.json");
@@ -75,15 +47,9 @@ function rotateHostToken() {
 rotateHostToken();
 setInterval(rotateHostToken, HOST_TOKEN_ROTATE_MS).unref();
 
-let seq = 0;
-
-function log(entry) {
-  const line = JSON.stringify({ ts: new Date().toISOString(), seq: ++seq, ...entry });
-  jsonl.write(line + "\n");
-}
-
 function summary(method, p, ct, len, out) {
-  console.log(`[${String(seq).padStart(4)}] ${method} ${p} (${ct ?? "?"}, ${len}B) -> ${out}`);
+  const safePath = (p.split("?")[0] || "/").slice(0, 160);
+  console.log(`${method} ${safePath} (${ct ?? "?"}, ${len}B) -> ${String(out).slice(0, 160)}`);
 }
 
 function cors(res) {
@@ -100,14 +66,6 @@ function readBody(req) {
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
-}
-
-function tryJson(buf) {
-  try {
-    return JSON.parse(buf.toString("utf8"));
-  } catch {
-    return undefined;
-  }
 }
 
 const HOP_HEADERS = new Set([
@@ -142,14 +100,6 @@ async function forward(req, p, body, res) {
   cors(res);
   res.writeHead(upstream.status, respHeaders);
   res.end(respBuf);
-  log({
-    kind: "forwarded-response",
-    path: p,
-    status: upstream.status,
-    respContentType: upstream.headers.get("content-type"),
-    respBodyB64: respBuf.toString("base64"),
-    respBodyText: respBuf.length < 200_000 ? respBuf.toString("utf8") : undefined,
-  });
   return `forward ${upstream.status} (${respBuf.length}B)`;
 }
 
@@ -172,26 +122,11 @@ function stubResponse(req, p, res) {
   return "stub {}";
 }
 
-const server = https.createServer(
-  {
-    key: fs.readFileSync(path.join(ROOT, "certs", "localhost.key")),
-    cert: fs.readFileSync(path.join(ROOT, "certs", "localhost.pem")),
-  },
-  async (req, res) => {
+const handle = async (req, res) => {
     const p = req.url ?? "/";
     const pathname = p.split("?")[0];
     const body = await readBody(req);
     const ct = String(req.headers["content-type"] ?? "");
-    const bodyJson = tryJson(body);
-
-    log({
-      kind: "request",
-      method: req.method,
-      path: p,
-      headers: req.headers,
-      bodyB64: body.toString("base64"),
-      bodyJson,
-    });
 
     if (req.method === "OPTIONS") {
       cors(res);
@@ -240,6 +175,18 @@ const server = https.createServer(
         res.writeHead(200, { "content-type": "application/proto" });
         res.end(payload);
         out = `available-models ${payload.length}B`;
+      } else if (pathname === "/aiserver.v1.GrokBotService/EnsureSandBox") {
+        const payload = encodeEnsureSandBox(boxConfig());
+        cors(res);
+        res.writeHead(200, { "content-type": "application/proto" });
+        res.end(payload);
+        out = `ensure-sandbox ${payload.length}B`;
+      } else if (pathname === "/aiserver.v1.GrokBotService/GetSandBoxRunState") {
+        const payload = encodeRunState();
+        cors(res);
+        res.writeHead(200, { "content-type": "application/proto" });
+        res.end(payload);
+        out = "sandbox-run-state RUNNING";
       } else if (pathname === "/aiserver.v1.InferenceService/Stream") {
         cors(res);
         const msgFrames = parseConnectFrames(body).filter((f) => f.flags === 0);
@@ -251,17 +198,19 @@ const server = https.createServer(
           const reqMsg = decodeStreamRequest(msgFrames[0].payload);
           const summary = requestSummary(reqMsg);
           console.log(`[inference] ${summary}`);
-          log({ kind: "inference-request", summary });
           res.writeHead(200, { "content-type": ct, "cache-control": "no-store" });
+          const abortController = new AbortController();
+          res.on("close", () => {
+            if (!res.writableEnded) abortController.abort(new Error("client disconnected"));
+          });
           let n = 0;
           try {
-            for await (const frameBytes of runSession(reqMsg)) {
+            for await (const frameBytes of runSession(reqMsg, { signal: abortController.signal })) {
               res.write(envelope(frameBytes));
               n++;
             }
           } catch (err) {
-            log({ kind: "inference-error", error: String(err?.stack ?? err) });
-            console.error(`[inference] error: ${err?.message ?? err}`);
+            if (!abortController.signal.aborted) console.error(`[inference] ${err?.name ?? "Error"}`);
           }
           res.end(CONNECT_END_FRAME);
           out = `inference ${n} frames`;
@@ -272,7 +221,7 @@ const server = https.createServer(
         out = stubResponse(req, p, res);
       }
     } catch (err) {
-      log({ kind: "error", path: p, error: String(err?.stack ?? err) });
+      console.error(`[request] ${req.method} ${pathname}: ${err?.name ?? "Error"}`);
       if (!res.headersSent) {
         cors(res);
         res.writeHead(502, { "content-type": "application/json" });
@@ -280,14 +229,33 @@ const server = https.createServer(
       } else {
         res.end();
       }
-      out = `error ${err?.message}`;
+      out = "request error";
     }
     summary(req.method, p, ct, body.length, out);
+};
+
+// HTTPS for the Linux host launcher, which trusts certs/rootCA.pem.
+const server = https.createServer(
+  {
+    key: fs.readFileSync(path.join(ROOT, "certs", "localhost.key")),
+    cert: fs.readFileSync(path.join(ROOT, "certs", "localhost.pem")),
   },
+  handle,
 );
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`grokbot-shim recon server: https://localhost:${PORT} (mode=${MODE})`);
-  console.log(`capture log: ${path.join(LOG_DIR, `capture-${stamp}.jsonl`)}`);
   if (MODE === "forward") console.log(`upstream: ${UPSTREAM}`);
 });
+
+// Plain HTTP on loopback for the Windows app and the box host. The app accepts
+// http://localhost as a dev backend, so no TLS verification has to be disabled.
+// Windows resolves "localhost" to ::1 first, so listen on both stacks.
+const HTTP_PORT = Number(process.env.HTTP_PORT ?? 8444);
+for (const host of ["127.0.0.1", "::1"]) {
+  const plain = http.createServer(handle);
+  plain.on("error", (err) => {
+    if (err.code !== "EADDRNOTAVAIL") console.error(`http listen ${host}: ${err.code ?? err.message}`);
+  });
+  plain.listen(HTTP_PORT, host, () => console.log(`grokbot-shim http: http://[${host}]:${HTTP_PORT}`));
+}

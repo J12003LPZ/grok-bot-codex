@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-GROKBOT_APP="${GROKBOT_APP:-/opt/Grok Bot/sand}"
+GROKBOT_APP="${GROKBOT_APP:-/opt/Grok Bot/grok-bot}"
 failed=0
 
 check_command() {

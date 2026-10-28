@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTAINER="${GROKBOT_COMPUTER_CONTAINER:-grokbot-computer}"
+# The agent host runs inside this container (the box supervisor starts it) and
+# calls the shim over plain HTTP on the Docker host.
+SHIM_HTTP_PORT="${HTTP_PORT:-8444}"
+GATEWAY_TOKEN="${SAND_GATEWAY_TOKEN:-shim-gateway-token}"
 IMAGE="${GROKBOT_COMPUTER_IMAGE:-public.ecr.aws/k0i0n2g5/cursorenvironments/universal@sha256:dcac90cba36653f261988b1c88d11b7655493d455c4af0a18c5991ddaa5da020}"
 
 require_docker() {
@@ -24,8 +29,12 @@ is_running() {
 }
 
 is_ready() {
-  curl -fsS --max-time 2 http://127.0.0.1:6080/vnc.html >/dev/null 2>&1 &&
-    curl -sS --max-time 2 http://127.0.0.1:1337/health >/dev/null 2>&1
+  local api_status
+  curl -fsS --max-time 2 http://127.0.0.1:6080/vnc.html >/dev/null 2>&1 || return 1
+  api_status="$(curl -sS --max-time 2 -o /dev/null -w '%{http_code}' http://127.0.0.1:1337/health 2>/dev/null)" || return 1
+  # The pinned exec daemon responds 404 to GET /health; accept that response
+  # as proof the HTTP listener is reachable, while rejecting server errors.
+  [[ "$api_status" == "404" || "$api_status" =~ ^2[0-9]{2}$ ]]
 }
 
 wait_ready() {
@@ -63,6 +72,15 @@ start() {
       -p 127.0.0.1:1339:1339 \
       -p 127.0.0.1:6080:6080 \
       -p 127.0.0.1:6081:6081 \
+      -p 127.0.0.1:8550:8550 \
+      --add-host=host.docker.internal:host-gateway \
+      -e SAND_SUPERVISOR_ENABLED=1 \
+      -e SAND_BACKEND_URL="http://host.docker.internal:${SHIM_HTTP_PORT}" \
+      -e SAND_HOST_PORT=8550 \
+      -e SAND_GATEWAY_BIND_HOST=0.0.0.0 \
+      -e SAND_GATEWAY_TOKEN="$GATEWAY_TOKEN" \
+      -e SAND_DEV_INFERENCE_TOKEN_FILE=/shim-state/host-token.json \
+      -v "$ROOT/state:/shim-state:ro" \
       -v grokbot-computer-workspace:/workspace \
       -v grokbot-computer-chrome:/home/box/chrome-profile \
       -v grokbot-computer-data:/home/box/sand-data \

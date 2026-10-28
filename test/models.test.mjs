@@ -26,6 +26,8 @@ test("tracked model configuration contains no inline API keys", () => {
   const config = JSON.parse(fs.readFileSync(new URL("../models.json", import.meta.url), "utf8"));
   for (const entry of Object.values(config.models)) {
     assert.equal("api_key" in entry, false);
+    assert.equal(entry.provider, "codex-oauth");
+    assert.equal("fallback" in entry, false);
   }
 });
 

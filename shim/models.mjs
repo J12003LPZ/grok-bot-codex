@@ -12,16 +12,8 @@ function loadConfig() {
 }
 
 function presentation(id, entry) {
-  const provider = entry.provider ?? "local";
-  if (provider === "codex-oauth") {
-    return { vendorName: "OpenAI", vendor: { id: 2, displayName: "OpenAI" }, tagline: "Via Codex subscription" };
-  }
-  if (provider === "openai-compatible") {
-    const model = String(entry.model ?? "");
-    if (model.startsWith("z-ai/")) {
-      return { vendorName: "Z.ai", vendor: { id: 8, displayName: "Z.ai" }, tagline: "Via OpenAI-compatible API" };
-    }
-    return { vendorName: "OpenAI-compatible", vendor: { id: 0, displayName: "OpenAI-compatible" }, tagline: "Configured in models.json" };
+  if (entry.provider === "codex-oauth") {
+    return { vendorName: "OpenAI", vendor: { id: 2, displayName: "OpenAI" }, tagline: "Via ChatGPT plan" };
   }
   return { vendorName: "Local", vendor: { id: 0, displayName: "Local" }, tagline: id };
 }

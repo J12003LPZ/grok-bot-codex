@@ -29,6 +29,13 @@ if [[ ! -x "$ROOT/node_modules/.bin/asar" ]]; then
   npm --prefix "$ROOT" ci
 fi
 
+ASAR_CLI="$ROOT/node_modules/@electron/asar/bin/asar.mjs"
+if ! node "$ASAR_CLI" list "$ASAR" | grep -Fx '/dist/host/host-main.cjs' >/dev/null; then
+  echo "incompatible Grok Bot build: app.asar does not contain /dist/host/host-main.cjs" >&2
+  echo "this shim requires a Grok Bot build that includes the legacy local host runtime" >&2
+  exit 1
+fi
+
 mkdir -p "$ROOT/certs" "$ROOT/host/dist/host" "$ROOT/host/dist/deps"
 mkdir -p "$ROOT/appdata" "$ROOT/logs" "$ROOT/state/host-workdir"
 
@@ -58,8 +65,8 @@ fi
 echo "extracting the host runtime from the local Grok Bot installation..."
 (
   cd "$ROOT/host/dist/host"
-  "$ROOT/node_modules/.bin/asar" extract-file "$ASAR" dist/host/host-main.cjs
-  "$ROOT/node_modules/.bin/asar" extract-file "$ASAR" dist/host/host-main.cjs.map
+  node "$ASAR_CLI" extract-file "$ASAR" dist/host/host-main.cjs
+  node "$ASAR_CLI" extract-file "$ASAR" dist/host/host-main.cjs.map
 )
 cp -a "$UNPACKED/dist/deps/." "$ROOT/host/dist/deps/"
 

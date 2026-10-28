@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT/scripts/load-env.sh"
-GROKBOT_APP="${GROKBOT_APP:-/opt/Grok Bot/sand}"
+GROKBOT_APP="${GROKBOT_APP:-/opt/Grok Bot/grok-bot}"
 
 export SAND_BACKEND_URL="${SAND_BACKEND_URL:-https://localhost:8443}"
 export NODE_EXTRA_CA_CERTS="$ROOT/certs/rootCA.pem"
