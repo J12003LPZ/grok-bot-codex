@@ -44,6 +44,14 @@ if ($staleSchema) {
 }
 
 $listening = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+# The app sends its sign-in and every prompt to this port: refuse to use it if
+# something other than this checkout's shim holds it.
+foreach ($owner in ($listening | Select-Object -ExpandProperty OwningProcess -Unique)) {
+  $cmdline = (Get-CimInstance Win32_Process -Filter "ProcessId=$owner").CommandLine
+  if ($cmdline -notlike "*$(Join-Path $Root 'shim\server.mjs')*") {
+    throw "port $Port is held by another program (pid $owner), not the shim; stop it and run this again"
+  }
+}
 if (-not $listening) {
   $log = Join-Path $Root "state\shim.log"
   New-Item -ItemType Directory -Force (Split-Path $log) | Out-Null
