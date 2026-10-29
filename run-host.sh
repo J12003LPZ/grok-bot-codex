@@ -2,14 +2,14 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT/scripts/load-env.sh"
-GROKBOT_APP="${GROKBOT_APP:-/opt/Grok Bot/sand}"
+GROKBOT_APP="${GROKBOT_APP:-/opt/Grok Bot/grok-bot}"
 
 export SAND_BACKEND_URL="${SAND_BACKEND_URL:-https://localhost:8443}"
 export NODE_EXTRA_CA_CERTS="$ROOT/certs/rootCA.pem"
 export SAND_HOST_PORT="${SAND_HOST_PORT:-8550}"
 export SAND_GATEWAY_BIND_HOST="${SAND_GATEWAY_BIND_HOST:-127.0.0.1}"
 export SAND_GATEWAY_TOKEN="${SAND_GATEWAY_TOKEN:-shim-gateway-token}"
-export SAND_DEV_INFERENCE_TOKEN_FILE="$ROOT/state/host-token.json"
+export SAND_DEV_INFERENCE_TOKEN_FILE="$ROOT/state/box/host-token.json"
 export SAND_HOST_LOG_FILE="${SAND_HOST_LOG_FILE:-$ROOT/logs/host.log}"
 export SAND_BOX_MAX_WINDOWS="${SAND_BOX_MAX_WINDOWS:-1}"
 export ELECTRON_RUN_AS_NODE=1

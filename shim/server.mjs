@@ -1,54 +1,70 @@
+import http from "node:http";
 import https from "node:https";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { mintJwt } from "./jwt.mjs";
+import { bearerOf, mintJwt, verifyJwt } from "./jwt.mjs";
+import { desktopLoginEmail } from "./secrets.mjs";
+import { CONNECT_END_FRAME, envelope, parseConnectFrames } from "./connect.mjs";
 import { decodeStreamRequest, runSession, requestSummary } from "./inference.mjs";
 import { encodeAvailableModels } from "./models.mjs";
+import { boxConfig, encodeEnsureSandBox, encodeRunState } from "./sandbox.mjs";
+import { checkLoopbackRequest } from "./guard.mjs";
+import { AgentStore } from "./agents.mjs";
+import { agentHandlers } from "./handlers.mjs";
+import { RpcError, createRpc, loadGenerated } from "./rpc.mjs";
+import { clientLogHandlers } from "./client-log.mjs";
+import { createBoxController } from "./box.mjs";
+import { createCatalog, createCatalogIndex } from "./catalog.mjs";
+import { PluginStore, pluginHandlers } from "./plugins.mjs";
+
+// Starts the box container on demand (EnsureSandBox). SHIM_BOX_AUTOSTART=0
+// leaves it to computerctl.sh and reports it as always running.
+const box =
+  process.env.SHIM_BOX_AUTOSTART === "0"
+    ? { state: async () => "running", ensure: async () => "running" }
+    : createBoxController({ gatewayUrl: process.env.SHIM_BOX_GATEWAY_URL ?? "http://127.0.0.1:8550" });
+
+// Typed RPCs need the schema generated from the installed app. Without it the
+// server still runs; those calls fall back to empty replies.
+const generated = loadGenerated();
+// Public Marketplace catalog reads go upstream anonymously; SHIM_PUBLIC_CATALOG=0 keeps them local (empty).
+const catalog = createCatalog({ enabled: process.env.SHIM_PUBLIC_CATALOG !== "0" });
+const handlers = {
+  ...agentHandlers(new AgentStore()),
+  ...clientLogHandlers(process.env.SHIM_CLIENT_LOG),
+  ...(generated ? pluginHandlers(new PluginStore(), createCatalogIndex(catalog, generated.root)) : {}),
+};
+const rpc = generated ? createRpc({ ...generated, handlers }) : null;
+if (!generated) console.log("no generated/app.proto: run `npm run gen-proto -- <path to proto.cjs>` for agent RPCs");
 import { statsigBootstrap } from "./statsig.mjs";
-
-function parseConnectFrames(buf) {
-  const frames = [];
-  let off = 0;
-  while (off + 5 <= buf.length) {
-    const flags = buf[off];
-    const len = buf.readUInt32BE(off + 1);
-    if (off + 5 + len > buf.length) break;
-    frames.push({ flags, payload: buf.subarray(off + 5, off + 5 + len) });
-    off += 5 + len;
-  }
-  return frames;
-}
-
-function frameBytes(flags, payload) {
-  const header = Buffer.alloc(5);
-  header[0] = flags;
-  header.writeUInt32BE(payload.length, 1);
-  return Buffer.concat([header, payload]);
-}
 
 // Connect streaming requires the trailing frame (flag 0x02) to carry a JSON
 // EndStreamResponse. A zero-length payload makes the client throw
 // "failed to parse EndStreamResponse: invalid end stream".
-const CONNECT_END_FRAME = frameBytes(0x02, Buffer.from("{}", "utf8"));
-
-function envelope(payload) {
-  return frameBytes(0x00, payload);
-}
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = Number(process.env.PORT ?? 8443);
 const MODE = process.env.MODE ?? "stub"; // stub | forward
 const UPSTREAM = process.env.UPSTREAM ?? "https://api2.cursor.sh";
-const LOG_DIR = path.join(ROOT, "logs");
-fs.mkdirSync(LOG_DIR, { recursive: true });
-
-const stamp = new Date().toISOString().slice(0, 10);
-const jsonl = fs.createWriteStream(path.join(LOG_DIR, `capture-${stamp}.jsonl`), { flags: "a" });
-
 const STATE_DIR = path.join(ROOT, "state");
 fs.mkdirSync(STATE_DIR, { recursive: true });
-const HOST_TOKEN_FILE = path.join(STATE_DIR, "host-token.json");
+// state/box/ is the only part of state/ mounted into the box container.
+const BOX_STATE_DIR = path.join(STATE_DIR, "box");
+fs.mkdirSync(BOX_STATE_DIR, { recursive: true });
+const HOST_TOKEN_FILE = path.join(BOX_STATE_DIR, "host-token.json");
+const DESKTOP_LOGIN_EMAIL = desktopLoginEmail();
+
+function desktopTokens() {
+  return {
+    accessToken: mintJwt({ aud: "desktop" }),
+    refreshToken: mintJwt({ aud: "desktop-refresh", ttlSec: 86400 * 30 }),
+  };
+}
+
+// The desktop proves itself with a token the shim signed for it; anything
+// else (the box host, or a request without a valid token) is treated as the box.
+const callerOf = (req) => (verifyJwt(bearerOf(req), "desktop") ? "desktop" : "box");
 const HOST_TOKEN_TTL_SEC = 3600;
 const HOST_TOKEN_ROTATE_MS = 30 * 60 * 1000;
 
@@ -66,7 +82,7 @@ function writeHostToken(jwt) {
 }
 
 function rotateHostToken() {
-  writeHostToken(mintJwt({ ttlSec: HOST_TOKEN_TTL_SEC }));
+  writeHostToken(mintJwt({ aud: "box", ttlSec: HOST_TOKEN_TTL_SEC }));
 }
 
 // The packaged desktop normally refreshes this credential through its auth
@@ -75,15 +91,9 @@ function rotateHostToken() {
 rotateHostToken();
 setInterval(rotateHostToken, HOST_TOKEN_ROTATE_MS).unref();
 
-let seq = 0;
-
-function log(entry) {
-  const line = JSON.stringify({ ts: new Date().toISOString(), seq: ++seq, ...entry });
-  jsonl.write(line + "\n");
-}
-
 function summary(method, p, ct, len, out) {
-  console.log(`[${String(seq).padStart(4)}] ${method} ${p} (${ct ?? "?"}, ${len}B) -> ${out}`);
+  const safePath = (p.split("?")[0] || "/").slice(0, 160);
+  console.log(`${method} ${safePath} (${ct ?? "?"}, ${len}B) -> ${String(out).slice(0, 160)}`);
 }
 
 function cors(res) {
@@ -100,14 +110,6 @@ function readBody(req) {
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
-}
-
-function tryJson(buf) {
-  try {
-    return JSON.parse(buf.toString("utf8"));
-  } catch {
-    return undefined;
-  }
 }
 
 const HOP_HEADERS = new Set([
@@ -142,14 +144,6 @@ async function forward(req, p, body, res) {
   cors(res);
   res.writeHead(upstream.status, respHeaders);
   res.end(respBuf);
-  log({
-    kind: "forwarded-response",
-    path: p,
-    status: upstream.status,
-    respContentType: upstream.headers.get("content-type"),
-    respBodyB64: respBuf.toString("base64"),
-    respBodyText: respBuf.length < 200_000 ? respBuf.toString("utf8") : undefined,
-  });
   return `forward ${upstream.status} (${respBuf.length}B)`;
 }
 
@@ -172,26 +166,11 @@ function stubResponse(req, p, res) {
   return "stub {}";
 }
 
-const server = https.createServer(
-  {
-    key: fs.readFileSync(path.join(ROOT, "certs", "localhost.key")),
-    cert: fs.readFileSync(path.join(ROOT, "certs", "localhost.pem")),
-  },
-  async (req, res) => {
+const handle = async (req, res) => {
     const p = req.url ?? "/";
     const pathname = p.split("?")[0];
     const body = await readBody(req);
     const ct = String(req.headers["content-type"] ?? "");
-    const bodyJson = tryJson(body);
-
-    log({
-      kind: "request",
-      method: req.method,
-      path: p,
-      headers: req.headers,
-      bodyB64: body.toString("base64"),
-      bodyJson,
-    });
 
     if (req.method === "OPTIONS") {
       cors(res);
@@ -204,25 +183,38 @@ const server = https.createServer(
     let out;
     try {
       if (pathname === "/auth/cursor_dev_session_token") {
-        const accessToken = mintJwt();
-        const refreshToken = mintJwt({ ttlSec: 86400 * 30 });
-        writeHostToken(accessToken);
+        // Dev sign-in has no password: only the per-install address the
+        // launcher passes as SAND_DEV_LOGIN_EMAIL gets a desktop session.
+        const email = new URL(p, "http://localhost").searchParams.get("email");
         cors(res);
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ accessToken, refreshToken, authId: "shim-local-user" }));
-        out = "dev-session-token";
+        if (email !== DESKTOP_LOGIN_EMAIL) {
+          res.writeHead(403, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "unknown sign-in address; start Grok Bot with the launcher" }));
+          out = "dev-session-token refused";
+        } else {
+          const { accessToken, refreshToken } = desktopTokens();
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ accessToken, refreshToken, authId: "shim-local-user" }));
+          out = "dev-session-token";
+        }
       } else if (pathname === "/oauth/token") {
-        const accessToken = mintJwt();
-        writeHostToken(accessToken);
+        let refresh = null;
+        try {
+          refresh = JSON.parse(body.toString("utf8")).refresh_token;
+        } catch {
+          // not JSON: refused below
+        }
         cors(res);
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(
-          JSON.stringify({
-            access_token: accessToken,
-            refresh_token: mintJwt({ ttlSec: 86400 * 30 }),
-          }),
-        );
-        out = "oauth-refresh";
+        if (!verifyJwt(refresh, "desktop-refresh")) {
+          res.writeHead(401, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid_grant" }));
+          out = "oauth-refresh refused";
+        } else {
+          const { accessToken, refreshToken } = desktopTokens();
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ access_token: accessToken, refresh_token: refreshToken }));
+          out = "oauth-refresh";
+        }
       } else if (pathname === "/health") {
         cors(res);
         res.writeHead(200, { "content-type": "application/json" });
@@ -240,6 +232,20 @@ const server = https.createServer(
         res.writeHead(200, { "content-type": "application/proto" });
         res.end(payload);
         out = `available-models ${payload.length}B`;
+      } else if (pathname === "/aiserver.v1.GrokBotService/EnsureSandBox") {
+        const state = await box.ensure();
+        const payload = encodeEnsureSandBox(boxConfig(), state);
+        cors(res);
+        res.writeHead(200, { "content-type": "application/proto" });
+        res.end(payload);
+        out = `ensure-sandbox ${state}`;
+      } else if (pathname === "/aiserver.v1.GrokBotService/GetSandBoxRunState") {
+        const state = await box.state();
+        const payload = encodeRunState(state);
+        cors(res);
+        res.writeHead(200, { "content-type": "application/proto" });
+        res.end(payload);
+        out = `sandbox-run-state ${state}`;
       } else if (pathname === "/aiserver.v1.InferenceService/Stream") {
         cors(res);
         const msgFrames = parseConnectFrames(body).filter((f) => f.flags === 0);
@@ -251,20 +257,48 @@ const server = https.createServer(
           const reqMsg = decodeStreamRequest(msgFrames[0].payload);
           const summary = requestSummary(reqMsg);
           console.log(`[inference] ${summary}`);
-          log({ kind: "inference-request", summary });
           res.writeHead(200, { "content-type": ct, "cache-control": "no-store" });
+          const abortController = new AbortController();
+          res.on("close", () => {
+            if (!res.writableEnded) abortController.abort(new Error("client disconnected"));
+          });
           let n = 0;
           try {
-            for await (const frameBytes of runSession(reqMsg)) {
+            const onModel = (m) => console.log(`[inference] -> ${m}`);
+            for await (const frameBytes of runSession(reqMsg, { signal: abortController.signal, onModel })) {
               res.write(envelope(frameBytes));
               n++;
             }
           } catch (err) {
-            log({ kind: "inference-error", error: String(err?.stack ?? err) });
-            console.error(`[inference] error: ${err?.message ?? err}`);
+            if (!abortController.signal.aborted) console.error(`[inference] ${err?.name ?? "Error"}`);
           }
           res.end(CONNECT_END_FRAME);
           out = `inference ${n} frames`;
+        }
+      } else if (catalog.handles(pathname) && ct.includes("application/proto")) {
+        const bytes = await catalog.read(pathname, body);
+        if (bytes === null) {
+          out = `catalog unavailable; ${stubResponse(req, p, res)}`;
+        } else {
+          cors(res);
+          res.writeHead(200, { "content-type": "application/proto" });
+          res.end(bytes);
+          out = `catalog ${pathname.split("/").pop()} ${bytes.length}B`;
+        }
+      } else if (rpc?.handles(pathname) && ct.includes("application/proto")) {
+        const method = pathname.split("/").pop();
+        const caller = callerOf(req);
+        cors(res);
+        try {
+          const payload = await rpc.unary(pathname, body, { caller });
+          res.writeHead(200, { "content-type": "application/proto" });
+          res.end(payload);
+          out = `rpc ${method} ${payload.length}B (${caller})`;
+        } catch (err) {
+          if (!(err instanceof RpcError)) throw err;
+          res.writeHead(err.httpStatus, { "content-type": "application/json" });
+          res.end(err.body());
+          out = `rpc ${method} ${err.code} (${caller})`;
         }
       } else if (MODE === "forward") {
         out = await forward(req, p, body, res);
@@ -272,7 +306,7 @@ const server = https.createServer(
         out = stubResponse(req, p, res);
       }
     } catch (err) {
-      log({ kind: "error", path: p, error: String(err?.stack ?? err) });
+      console.error(`[request] ${req.method} ${pathname}: ${err?.name ?? "Error"}`);
       if (!res.headersSent) {
         cors(res);
         res.writeHead(502, { "content-type": "application/json" });
@@ -280,14 +314,46 @@ const server = https.createServer(
       } else {
         res.end();
       }
-      out = `error ${err?.message}`;
+      out = "request error";
     }
     summary(req.method, p, ct, body.length, out);
+};
+
+// Both listeners refuse other Host names (DNS rebinding) and any request with
+// an Origin header (web pages); the app and the box host send neither.
+const guarded = (req, res) => {
+  const verdict = checkLoopbackRequest(req);
+  if (!verdict.ok) {
+    console.error(`[guard] refused ${req.method} ${(req.url ?? "/").split("?")[0].slice(0, 80)}: ${verdict.reason} (host=${String(req.headers.host).slice(0, 60)})`);
+    res.writeHead(verdict.status, { "content-type": "text/plain" });
+    res.end(verdict.reason);
+    return;
+  }
+  return handle(req, res);
+};
+
+// HTTPS for the Linux host launcher, which trusts certs/rootCA.pem.
+const server = https.createServer(
+  {
+    key: fs.readFileSync(path.join(ROOT, "certs", "localhost.key")),
+    cert: fs.readFileSync(path.join(ROOT, "certs", "localhost.pem")),
   },
+  guarded,
 );
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`grokbot-shim recon server: https://localhost:${PORT} (mode=${MODE})`);
-  console.log(`capture log: ${path.join(LOG_DIR, `capture-${stamp}.jsonl`)}`);
   if (MODE === "forward") console.log(`upstream: ${UPSTREAM}`);
 });
+
+// Plain HTTP on loopback for the Windows app and the box host. The app accepts
+// http://localhost as a dev backend, so no TLS verification has to be disabled.
+// Windows resolves "localhost" to ::1 first, so listen on both stacks.
+const HTTP_PORT = Number(process.env.HTTP_PORT ?? 8444);
+for (const host of ["127.0.0.1", "::1"]) {
+  const plain = http.createServer(guarded);
+  plain.on("error", (err) => {
+    if (err.code !== "EADDRNOTAVAIL") console.error(`http listen ${host}: ${err.code ?? err.message}`);
+  });
+  plain.listen(HTTP_PORT, host, () => console.log(`grokbot-shim http: http://[${host}]:${HTTP_PORT}`));
+}

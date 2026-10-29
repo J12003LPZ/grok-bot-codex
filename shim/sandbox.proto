@@ -1,0 +1,47 @@
+syntax = "proto3";
+package aiserver.v1;
+
+// Field numbers mirror the schemas shipped in the Grok Bot desktop app
+// (dist/electron-main/proto.cjs, version 0.75.8). Only fields the app reads
+// from a local box are declared.
+
+enum SandBoxRunState {
+  UNSPECIFIED = 0;
+  ABSENT = 1;
+  HIBERNATED = 2;
+  RUNNING = 3;
+  STARTING = 4;
+}
+
+message SandBoxImageInfo {
+  optional string registry_tag = 1;
+  optional string static_snapshot_path = 2;
+}
+
+message EnsureSandBoxResponse {
+  string cluster = 1;
+  string tenant_id = 2;
+  string pod_id = 3;
+  string network_token = 4;
+  string exec_daemon_auth_token = 5;
+  string exec_daemon_url = 6;
+  string vnc_url = 7;
+  string terminals_folder = 8;
+  bool image_update_available = 9;
+  string gateway_url = 10;
+  string gateway_token = 11;
+  string fork_vnc_base_url = 12;
+  SandBoxRunState run_state = 13;
+  optional bool egress_tunnel_ownership = 14;
+  SandBoxImageInfo image = 15;
+  string gateway_port_token = 16;
+  string egress_tunnel_port_token = 17;
+  string fork_vnc_port_token = 18;
+}
+
+message GetSandBoxRunStateResponse {
+  SandBoxRunState state = 1;
+  optional bool image_update_available = 2;
+  optional bool egress_tunnel_ownership = 3;
+  SandBoxImageInfo image = 4;
+}

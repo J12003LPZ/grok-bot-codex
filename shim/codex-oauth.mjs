@@ -1,27 +1,35 @@
-// Codex OAuth provider: routes inference at the ChatGPT subscription backend
-// (https://chatgpt.com/backend-api/codex/responses) using the credentials
-// `codex login` already wrote to ~/.codex/auth.json. No API key involved.
+// ChatGPT plan provider: uses the documented Sign in with ChatGPT Responses API.
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { frames, resolveEntry } from "./inference.mjs";
+import { frames } from "./inference.mjs";
 import { structToJson, valueToJson } from "./struct.mjs";
 
-const OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
-const OAUTH_TOKEN_URL = process.env.CODEX_OAUTH_TOKEN_URL ?? "https://auth.openai.com/oauth/token";
-const BASE_URL = (process.env.CODEX_BASE_URL ?? "https://chatgpt.com/backend-api/codex").replace(/\/+$/, "");
+const OAUTH_TOKEN_URL = "https://auth.openai.com/api/accounts/oauth/token";
+const BASE_URL = "https://api.openai.com/v1";
+const RESOURCE = "https://api.openai.com/v1";
 const REQUEST_TIMEOUT_MS = Number(process.env.CODEX_TIMEOUT_MS ?? 600_000);
 const REFRESH_SKEW_SEC = Number(process.env.CODEX_REFRESH_SKEW_SECONDS ?? 120);
 
 // Sand's InferenceStreamErrorType.
 const ERR = { unknown: 1, inputTokenLimit: 2, rateLimit: 4, auth: 5, permission: 6, overloaded: 7 };
+const modelCatalogCache = new Map();
+const refreshJobs = new Map();
 
 function authFile() {
-  if (process.env.CODEX_AUTH_FILE) return path.resolve(process.env.CODEX_AUTH_FILE);
   const home = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
-  return path.join(path.resolve(home), "auth.json");
+  const cliAuth = path.join(path.resolve(home), "auth.json");
+  const file = process.env.CODEX_AUTH_FILE
+    ? path.resolve(process.env.CODEX_AUTH_FILE)
+    : path.join(path.resolve(home), "grokbot-shim", "auth.json");
+  const canonical = (candidate) => {
+    try { candidate = fs.realpathSync(candidate); } catch { /* file may not exist yet */ }
+    return process.platform === "win32" ? path.resolve(candidate).toLowerCase() : path.resolve(candidate);
+  };
+  if (canonical(file) === canonical(cliAuth)) throw new Error("CODEX_AUTH_FILE must not point to Codex CLI auth.json; use npm run auth to create the separate Grok Bot grant");
+  return file;
 }
 
 function readJson(file) {
@@ -33,6 +41,8 @@ function readJson(file) {
 }
 
 function writeJsonPrivate(file, payload) {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") fs.chmodSync(path.dirname(file), 0o700);
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   fs.renameSync(tmp, file);
@@ -49,25 +59,20 @@ function jwtPayload(token) {
   }
 }
 
-function tokenIsExpiring(token) {
+function tokenExpiry(token) {
   const exp = jwtPayload(token)?.exp;
-  if (typeof exp !== "number") return false;
-  return exp <= Math.floor(Date.now() / 1000) + REFRESH_SKEW_SEC;
+  return typeof exp === "number" ? exp : undefined;
 }
 
-function accountIdFromToken(token) {
-  const id = jwtPayload(token)?.["https://api.openai.com/auth"]?.chatgpt_account_id;
-  return typeof id === "string" ? id : undefined;
-}
-
-async function refreshTokens(refreshToken) {
+async function refreshAuthorizedTokens(refreshToken, clientId) {
   const resp = await fetch(OAUTH_TOKEN_URL, {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: refreshToken,
-      client_id: OAUTH_CLIENT_ID,
+      client_id: clientId,
+      resource: RESOURCE,
     }),
     signal: AbortSignal.timeout(20_000),
   });
@@ -79,8 +84,8 @@ async function refreshTokens(refreshToken) {
     payload = {};
   }
   if (!resp.ok || typeof payload.access_token !== "string") {
-    const message = payload?.error_description ?? payload?.error ?? text ?? `HTTP ${resp.status}`;
-    throw new Error(`token refresh failed: ${String(message).slice(0, 300)}`);
+    const code = payload?.error ?? `HTTP ${resp.status}`;
+    throw new Error(`token refresh failed (${String(code).slice(0, 120)}); run npm run auth to reauthorize`);
   }
   return {
     accessToken: payload.access_token,
@@ -89,37 +94,111 @@ async function refreshTokens(refreshToken) {
   };
 }
 
-// Reads (and, when stale, refreshes in place) the credential `codex login` wrote.
+async function serializedRefresh(file) {
+  const absolutePath = path.resolve(file);
+  const key = process.platform === "win32" ? absolutePath.toLowerCase() : absolutePath;
+  if (refreshJobs.has(key)) return refreshJobs.get(key);
+  const job = (async () => {
+    const lockFile = `${file}.refresh.lock`;
+    const deadline = Date.now() + 25_000;
+    let lock;
+    while (!lock) {
+      try {
+        lock = fs.openSync(lockFile, "wx", 0o600);
+        fs.writeSync(lock, `${process.pid} ${Date.now()}\n`);
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+        try {
+          if (Date.now() - fs.statSync(lockFile).mtimeMs > 90_000) fs.unlinkSync(lockFile);
+        } catch (statError) {
+          if (statError?.code !== "ENOENT") throw statError;
+        }
+        if (Date.now() >= deadline) throw new Error("timed out waiting for another process to refresh the ChatGPT token");
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    try {
+      const payload = readJson(file);
+      const tokens = payload?.tokens ?? payload;
+      const accessToken = tokens?.access_token;
+      const scopes = new Set((Array.isArray(tokens?.scopes ?? payload?.scopes)
+        ? (tokens?.scopes ?? payload?.scopes).join(" ")
+        : (tokens?.scope ?? payload?.scope ?? jwtPayload(accessToken)?.scope ?? "")).split(/\s+/).filter(Boolean));
+      if (!scopes.has("chatgpt.tokens.use.direct")) throw new Error("the ChatGPT plan authorization was changed; run npm run auth");
+      if (tokenExpiry(accessToken) > Math.floor(Date.now() / 1000) + REFRESH_SKEW_SEC) return accessToken;
+      const refreshToken = tokens?.refresh_token;
+      const clientId = tokens?.client_id ?? payload?.client_id;
+      if (!refreshToken || !clientId) throw new Error("the ChatGPT plan token cannot be refreshed; run npm run auth");
+      const refreshed = await refreshAuthorizedTokens(refreshToken, clientId);
+      writeJsonPrivate(file, {
+        ...payload,
+        ...(payload.tokens ? { tokens: {
+          ...payload.tokens,
+          access_token: refreshed.accessToken,
+          refresh_token: refreshed.refreshToken,
+          ...(refreshed.idToken ? { id_token: refreshed.idToken } : {}),
+          last_refresh: new Date().toISOString(),
+        } } : {
+          access_token: refreshed.accessToken,
+          refresh_token: refreshed.refreshToken,
+          client_id: clientId,
+          ...(refreshed.idToken ? { id_token: refreshed.idToken } : {}),
+          last_refresh: new Date().toISOString(),
+        }),
+      });
+      return refreshed.accessToken;
+    } finally {
+      try { fs.closeSync(lock); } catch { /* already closed */ }
+      try { fs.unlinkSync(lockFile); } catch { /* another owner replaced a stale lock */ }
+    }
+  })();
+  refreshJobs.set(key, job);
+  try { return await job; }
+  finally { if (refreshJobs.get(key) === job) refreshJobs.delete(key); }
+}
+
+// Reads the shim's separate SIWC credential store; never edits Codex CLI auth.json.
 export async function resolveCredential() {
   const fromEnv = process.env.CODEX_ACCESS_TOKEN?.trim();
-  if (fromEnv) return { accessToken: fromEnv, source: "CODEX_ACCESS_TOKEN" };
+  if (fromEnv) {
+    const claims = jwtPayload(fromEnv);
+    const scopes = new Set(String(claims?.scope ?? "").split(/\s+/).filter(Boolean));
+    if (!scopes.has("chatgpt.tokens.use.direct")) {
+      throw new Error("CODEX_ACCESS_TOKEN is not authorized for direct ChatGPT plan use (missing chatgpt.tokens.use.direct)");
+    }
+    const exp = tokenExpiry(fromEnv);
+    if (exp === undefined || exp <= Math.floor(Date.now() / 1000) + REFRESH_SKEW_SEC) {
+      throw new Error("CODEX_ACCESS_TOKEN is expired or expiring; refresh the authorized ChatGPT plan token");
+    }
+    return { accessToken: fromEnv, source: "CODEX_ACCESS_TOKEN" };
+  }
 
   const file = authFile();
   const payload = readJson(file);
-  const accessToken = payload?.tokens?.access_token?.trim();
-  const refreshToken = payload?.tokens?.refresh_token?.trim();
+  const tokens = payload?.tokens ?? payload;
+  const accessToken = tokens?.access_token?.trim();
+  const refreshToken = tokens?.refresh_token?.trim();
   if (!accessToken) {
-    throw new Error(`no Codex credential in ${file} — run \`codex login\``);
+    throw new Error(`no ChatGPT plan authorization in ${file} — run \`npm run auth\``);
   }
-  if (!tokenIsExpiring(accessToken)) return { accessToken, source: file };
-  if (!refreshToken) return { accessToken, source: `${file} (expiring, no refresh_token)` };
+  const claims = jwtPayload(accessToken);
+  const savedScopes = tokens?.scopes ?? payload?.scopes;
+  const scopeValue = Array.isArray(savedScopes) ? savedScopes.join(" ") : (savedScopes ?? tokens?.scope ?? payload?.scope ?? claims?.scope ?? "");
+  const scopes = new Set(String(scopeValue).split(/\s+/).filter(Boolean));
+  if (!scopes.has("chatgpt.tokens.use.direct")) {
+    throw new Error(
+      "the saved token is not authorized for direct ChatGPT plan use (missing chatgpt.tokens.use.direct); a codex login token cannot be reused for this endpoint; run `npm run auth` to authorize grokbot-shim",
+    );
+  }
+  const clientId = tokens?.client_id ?? payload?.client_id;
+  const exp = tokenExpiry(accessToken);
+  if (exp === undefined) throw new Error("the ChatGPT plan access token has no valid expiry; run `npm run auth` to reauthorize");
+  if (exp > Math.floor(Date.now() / 1000) + REFRESH_SKEW_SEC) return { accessToken, source: file };
+  if (!refreshToken || !clientId) {
+    throw new Error("the ChatGPT plan token cannot be refreshed; run `npm run auth` to reauthorize");
+  }
 
-  const refreshed = await refreshTokens(refreshToken);
-  try {
-    writeJsonPrivate(file, {
-      ...payload,
-      tokens: {
-        ...payload.tokens,
-        access_token: refreshed.accessToken,
-        refresh_token: refreshed.refreshToken,
-        ...(refreshed.idToken ? { id_token: refreshed.idToken } : {}),
-        last_refresh: new Date().toISOString(),
-      },
-    });
-  } catch (err) {
-    console.error(`[codex] token refreshed but could not write ${file}: ${err?.message ?? err}`);
-  }
-  return { accessToken: refreshed.accessToken, source: `${file} (refreshed)` };
+  return { accessToken: await serializedRefresh(file), source: `${file} (refreshed)` };
 }
 
 function textOf(message) {
@@ -148,6 +227,8 @@ function userParts(message) {
           ? data
           : `data:${part.image.mimeType || "image/png"};base64,${data}`,
       });
+    } else if (part.part === "file" && part.file?.data) {
+      out.push(fileContentItem(part.file));
     }
   }
   return out;
@@ -165,6 +246,17 @@ function imageContentItem(part) {
   };
 }
 
+function fileContentItem(file) {
+  const data = file.data;
+  return {
+    type: "input_file",
+    file_data: /^(https?|data):/.test(data)
+      ? data
+      : `data:${file.mediaType || "application/octet-stream"};base64,${data}`,
+    ...(file.filename ? { filename: file.filename } : {}),
+  };
+}
+
 function toolResultOutput(part) {
   const value = valueToJson(part.result);
   const text = typeof value === "string" ? value : JSON.stringify(value ?? null);
@@ -174,12 +266,13 @@ function toolResultOutput(part) {
   for (const contentPart of part.experimentalContent ?? []) {
     const image = imageContentItem(contentPart);
     if (image) rich.push(image);
+    if (contentPart?.part === "file" && contentPart.file?.data) rich.push(fileContentItem(contentPart.file));
   }
   // Responses accepts either a plain string or multimodal content items for a
   // function_call_output. Computer screenshots arrive in experimentalContent;
   // keeping them attached to the tool result is what lets the model actually
   // see the desktop it just controlled.
-  return rich.some((item) => item.type === "input_image") ? rich : outputText;
+  return rich.some((item) => item.type === "input_image" || item.type === "input_file") ? rich : outputText;
 }
 
 // Sand keeps reasoning in `reasoning_parts`; we stash the Codex item id +
@@ -204,6 +297,7 @@ function reasoningItemFrom(part) {
 function buildRequestBody(req, entry, { withReasoningHistory }) {
   const instructions = [];
   const input = [];
+  const customTools = new Set((req.tools ?? []).filter((tool) => tool.customToolFormat).map((tool) => tool.name));
 
   for (const m of req.messages ?? []) {
     if (m.role === 4 || m.role === 0) {
@@ -215,7 +309,7 @@ function buildRequestBody(req, entry, { withReasoningHistory }) {
       for (const part of m.toolContent?.parts ?? []) {
         if (!part.toolCallId) continue;
         input.push({
-          type: "function_call_output",
+          type: customTools.has(part.toolName) ? "custom_tool_call_output" : "function_call_output",
           call_id: part.toolCallId,
           output: toolResultOutput(part),
         });
@@ -233,7 +327,12 @@ function buildRequestBody(req, entry, { withReasoningHistory }) {
       if (text) input.push({ role: "assistant", content: [{ type: "output_text", text }] });
       for (const call of m.toolCalls ?? []) {
         if (!call.toolCallId || !call.toolName) continue;
-        input.push({
+        input.push(customTools.has(call.toolName) ? {
+          type: "custom_tool_call",
+          call_id: call.toolCallId,
+          name: call.toolName,
+          input: call.rawToolCallArgs || "",
+        } : {
           type: "function_call",
           call_id: call.toolCallId,
           name: call.toolName,
@@ -250,44 +349,52 @@ function buildRequestBody(req, entry, { withReasoningHistory }) {
 
   const tools = (req.tools ?? [])
     .filter((t) => t.name)
-    .map((t) => ({
+    .map((t) => t.customToolFormat ? ({
+      type: "custom",
+      name: t.name,
+      description: t.description ?? "",
+      format: t.customToolFormat.type === "grammar" ? {
+        type: "grammar",
+        syntax: t.customToolFormat.syntax || "lark",
+        definition: t.customToolFormat.definition ?? "",
+      } : { type: "text" },
+    }) : ({
       type: "function",
       name: t.name,
       description: t.description ?? "",
       strict: false,
       parameters: structToJson(t.parameters) ?? { type: "object", properties: {} },
     }));
-
   const body = {
-    model: entry.model ?? "gpt-5.6-sol",
+    model: entry.model,
     instructions: instructions.join("\n\n") || "You are a helpful assistant.",
     input,
     stream: true,
     store: false,
-    prompt_cache_key: req.conversationId || undefined,
   };
 
   if (tools.length) {
-    body.tools = tools;
+    // ChatGPT plan usage currently accepts client-side function tools through
+    // developer-role additional_tools items. Top-level tools can be rejected
+    // by this route's capability gate.
+    input.unshift({ type: "additional_tools", role: "developer", tools });
     body.tool_choice = "auto";
     body.parallel_tool_calls = true;
   }
 
-  const effort = (entry.reasoning_effort ?? process.env.CODEX_REASONING_EFFORT ?? "medium").trim();
+  if (typeof body.model !== "string" || !body.model) throw new Error("Codex model configuration is missing its model ID");
+
+  const configuredEffort = String(entry.reasoning_effort ?? process.env.CODEX_REASONING_EFFORT ?? "medium").trim().toLowerCase();
+  const effort = configuredEffort === "minimal" ? "low" : configuredEffort;
   if (effort && effort !== "none") {
-    body.reasoning = { effort: effort === "minimal" ? "low" : effort, summary: "auto" };
+    if (!["low", "medium", "high", "xhigh", "max"].includes(effort)) {
+      throw new Error(`unsupported reasoning effort: ${configuredEffort}`);
+    }
+    body.reasoning = { effort, summary: "auto" };
     body.include = ["reasoning.encrypted_content"];
   }
 
   return body;
-}
-
-const sessionIds = new Map();
-
-function sessionIdFor(req) {
-  const key = req.conversationId || "default";
-  if (!sessionIds.has(key)) sessionIds.set(key, crypto.randomUUID());
-  return sessionIds.get(key);
 }
 
 async function* sseFrames(webStream) {
@@ -303,16 +410,12 @@ async function* sseFrames(webStream) {
       while ((idx = buffer.indexOf("\n\n")) !== -1) {
         const chunk = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 2);
-        for (const line of chunk.split("\n")) {
-          if (!line.startsWith("data:")) continue;
-          const data = line.slice(5).trim();
-          if (!data || data === "[DONE]") continue;
-          try {
-            yield JSON.parse(data);
-          } catch {
-            /* keep-alive or partial frame */
-          }
-        }
+        const data = chunk.split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart())
+          .join("\n").trim();
+        if (!data || data === "[DONE]") continue;
+        yield JSON.parse(data);
       }
     }
   } finally {
@@ -321,23 +424,14 @@ async function* sseFrames(webStream) {
 }
 
 function errorTypeFor(status, message) {
-  if (status === 401 || status === 403) return ERR.auth;
+  if (/subscription_sharing_usage_limit_exceeded|subscription_sharing_usage_unavailable/i.test(message)) return ERR.rateLimit;
+  if (/subscription_sharing_user_not_eligible|subscription_sharing_route_not_supported|subscription_sharing_unsupported_capability/i.test(message)) return ERR.permission;
+  if (status === 401) return ERR.auth;
+  if (status === 403) return ERR.permission;
   if (status === 429) return ERR.rateLimit;
   if (status === 500 || status === 502 || status === 503) return ERR.overloaded;
   if (/context|too long|maximum.*tokens/i.test(message)) return ERR.inputTokenLimit;
   return ERR.unknown;
-}
-
-function formatDuration(seconds) {
-  const total = Math.max(0, Math.round(seconds));
-  const days = Math.floor(total / 86400);
-  const hours = Math.floor((total % 86400) / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const parts = [];
-  if (days) parts.push(`${days}d`);
-  if (hours) parts.push(`${hours}h`);
-  if (!days) parts.push(`${minutes}m`);
-  return parts.join(" ");
 }
 
 function upstreamMessage(status, text, headers) {
@@ -345,59 +439,62 @@ function upstreamMessage(status, text, headers) {
   let payload;
   try {
     payload = JSON.parse(text);
-    message = String(payload?.error?.message ?? payload?.detail ?? payload?.error ?? text);
+    message = String(payload?.error?.message ?? payload?.error?.code ?? payload?.error?.type ?? payload?.detail ?? payload?.error ?? text);
   } catch {
     message = text || `HTTP ${status}`;
   }
-  // Quota errors carry the reset window; surfacing it beats a bare 429.
-  const resetIn = [
-    payload?.error?.resets_in_seconds,
-    headers?.get?.("x-codex-primary-reset-after-seconds"),
-  ]
-    .map(Number)
-    .find(Number.isFinite);
-  if (status === 429 && resetIn !== undefined) {
-    message += ` (${payload?.error?.plan_type ?? "codex"} plan; resets in ${formatDuration(resetIn)})`;
-  }
+  const code = payload?.error?.code;
+  if (code && !message.includes(code)) message = `${code}: ${message}`;
+  const requestId = headers?.get?.("x-request-id");
+  if (requestId) message += ` (request ${requestId})`;
   return message.slice(0, 600);
 }
 
-// Reasoning history is dropped for the rest of the process once the backend
-// rejects it (e.g. the desktop dropped a signature between turns).
-let reasoningHistoryEnabled = true;
+async function ensureModelAvailable(model, accessToken, signal) {
+  const cacheKey = crypto.createHash("sha256").update(accessToken).digest("hex");
+  let cached = modelCatalogCache.get(cacheKey);
+  if (!cached || cached.expiresAt <= Date.now()) {
+    const response = await fetch(`${BASE_URL}/models`, {
+      headers: { authorization: `Bearer ${accessToken}`, accept: "application/json" },
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
+    });
+    if (!response.ok) {
+      throw new Error(`model catalog ${response.status}: ${upstreamMessage(response.status, await response.text().catch(() => ""), response.headers)}`);
+    }
+    const payload = await response.json();
+    const rows = payload.models ?? payload.data ?? [];
+    cached = new Set(rows.filter((row) => row.visibility === undefined || row.visibility === "list").map((row) => row.slug ?? row.id).filter(Boolean));
+    for (const [key, value] of modelCatalogCache) if (value.expiresAt <= Date.now()) modelCatalogCache.delete(key);
+    modelCatalogCache.set(cacheKey, { models: cached, expiresAt: Date.now() + 5 * 60_000 });
+  } else {
+    cached = cached.models;
+  }
+  if (!cached.has(model)) throw new Error(`model ${model} is not available to this ChatGPT account`);
+}
 
-async function postResponses(req, entry, accessToken) {
+async function postResponses(req, entry, accessToken, signal) {
   const attempt = async (withReasoningHistory) => {
     const body = buildRequestBody(req, entry, { withReasoningHistory });
-    if (process.env.CODEX_DEBUG_REQUEST_FILE) {
-      fs.writeFileSync(process.env.CODEX_DEBUG_REQUEST_FILE, JSON.stringify(body, null, 2));
-    }
     const resp = await fetch(`${BASE_URL}/responses`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${accessToken}`,
         accept: "text/event-stream",
         "content-type": "application/json",
-        "user-agent": "codex_cli_rs/0.0.0 (grokbot-shim)",
-        originator: "codex_cli_rs",
-        session_id: sessionIdFor(req),
+        "user-agent": "grokbot-shim/1.0.0",
         "x-client-request-id": crypto.randomUUID(),
-        ...(accountIdFromToken(accessToken)
-          ? { "chatgpt-account-id": accountIdFromToken(accessToken) }
-          : {}),
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     return { resp, model: body.model };
   };
 
-  let { resp, model } = await attempt(reasoningHistoryEnabled);
-  if (resp.status === 400 && reasoningHistoryEnabled) {
+  let { resp, model } = await attempt(true);
+  if (resp.status === 400) {
     const text = await resp.text();
     if (/reasoning/i.test(text)) {
-      console.warn("[codex] backend rejected reasoning history; retrying without it");
-      reasoningHistoryEnabled = false;
+      console.warn("[codex] backend rejected reasoning history; retrying this request without it");
       ({ resp, model } = await attempt(false));
     } else {
       return { resp, model, errorText: text };
@@ -406,12 +503,14 @@ async function postResponses(req, entry, accessToken) {
   return { resp, model };
 }
 
-export async function* codexSession(req, entry) {
+export async function* codexSession(req, entry, { signal } = {}) {
   let credential;
   try {
     credential = await resolveCredential();
+    await ensureModelAvailable(entry.model, credential.accessToken, signal);
   } catch (err) {
-    yield frames.error(`shim: ${err?.message ?? err}`, ERR.auth);
+    const message = String(err?.message ?? err);
+    yield frames.error(`shim: ${message}`, /model catalog 401|model catalog 403|not available/.test(message) ? ERR.permission : ERR.auth);
     return;
   }
 
@@ -419,7 +518,7 @@ export async function* codexSession(req, entry) {
   let model;
   let errorText;
   try {
-    ({ resp, model, errorText } = await postResponses(req, entry, credential.accessToken));
+    ({ resp, model, errorText } = await postResponses(req, entry, credential.accessToken, signal));
   } catch (err) {
     yield frames.error(`shim: Codex request failed: ${err?.message ?? err}`, ERR.unknown);
     return;
@@ -428,15 +527,6 @@ export async function* codexSession(req, entry) {
   if (!resp.ok || !resp.body) {
     const text = errorText ?? (await resp.text().catch(() => ""));
     const message = upstreamMessage(resp.status, text, resp.headers);
-    // Subscription quota is a hard wall for hours or days; keep the app usable
-    // if models.json names a fallback entry.
-    const fallback = entry.fallback ? resolveEntry(entry.fallback) : undefined;
-    if (fallback && (resp.status === 429 || resp.status === 401 || resp.status === 403)) {
-      console.warn(`[codex] ${resp.status}: ${message} — falling back to ${entry.fallback}`);
-      const { runEntry } = await import("./inference.mjs");
-      yield* runEntry(req, fallback);
-      return;
-    }
     yield frames.error(`shim: Codex ${resp.status}: ${message}`, errorTypeFor(resp.status, message));
     return;
   }
@@ -445,8 +535,12 @@ export async function* codexSession(req, entry) {
   let usage;
   const toolCalls = [];
   const reasoningParts = [];
+  const customToolNames = new Set((req.tools ?? []).filter((tool) => tool.customToolFormat).map((tool) => tool.name));
+  let completed = false;
+  let streamFailure;
 
-  for await (const event of sseFrames(resp.body)) {
+  try {
+    for await (const event of sseFrames(resp.body)) {
     const type = event.type;
 
     if (type === "response.output_text.delta") {
@@ -469,9 +563,21 @@ export async function* codexSession(req, entry) {
 
     if (type === "response.output_item.done") {
       const item = event.item;
-      if (item?.type === "function_call" && item.name) {
+      if ((item?.type === "function_call" || item?.type === "custom_tool_call") && item.name) {
         const id = item.call_id || item.id || `codex-tc-${toolCalls.length}`;
-        const args = typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments ?? {});
+        const isCustom = item.type === "custom_tool_call" || customToolNames.has(item.name);
+        const args = isCustom
+          ? String(item.input ?? "")
+          : typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments ?? {});
+        if (!isCustom) {
+          try {
+            const parsed = JSON.parse(args || "{}");
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("expected object");
+          } catch {
+            yield frames.error(`shim: Codex returned malformed arguments for tool ${item.name}`, ERR.unknown);
+            return;
+          }
+        }
         toolCalls.push({ id, name: item.name, args });
         yield frames.toolCall({
           toolCallId: id,
@@ -493,9 +599,16 @@ export async function* codexSession(req, entry) {
       continue;
     }
 
-    if (type === "response.completed" || type === "response.incomplete") {
+    if (type === "response.completed") {
       usage = event.response?.usage ?? usage;
+      completed = true;
       break;
+    }
+
+    if (type === "response.incomplete") {
+      const reason = event.response?.incomplete_details?.reason ?? "unknown reason";
+      yield frames.error(`shim: Codex response incomplete (${reason})`, errorTypeFor(200, reason));
+      return;
     }
 
     if (type === "response.failed" || type === "error") {
@@ -503,6 +616,20 @@ export async function* codexSession(req, entry) {
       yield frames.error(`shim: Codex stream failed: ${message}`, errorTypeFor(200, message));
       return;
     }
+    }
+  } catch (error) {
+    streamFailure = error;
+  }
+
+  if (streamFailure) {
+    if (signal?.aborted) return;
+    yield frames.error(`shim: Codex stream disconnected: ${streamFailure?.name ?? "network error"}`, ERR.overloaded);
+    return;
+  }
+
+  if (!completed) {
+    yield frames.error("shim: Codex stream ended before response.completed", ERR.unknown);
+    return;
   }
 
   yield frames.text("", true);
