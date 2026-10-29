@@ -73,13 +73,22 @@ function loadModelsConfig() {
   }
 }
 
-// The desktop asks for its built-in model ids (e.g. "grok-4.5") whatever the
-// model list says, so models.json maps those through "aliases". Ids that are
-// neither a model nor an alias still fail closed.
-export function resolveModel(req) {
-  const cfg = loadModelsConfig();
+// The desktop asks for its built-in model ids (e.g. "grok-4.5", or
+// "claude-opus-4-8" for computer use) whatever the model list says, so
+// models.json maps those through "aliases". New app versions bring new ids;
+// "fallback", when set, names the configured model that any other id uses.
+// Without it, ids that are neither a model nor an alias fail closed.
+const fallbackLogged = new Set();
+export function resolveModel(req, cfg = loadModelsConfig()) {
   const wanted = req.modelId || req.requestedModel?.modelId || cfg.default;
-  const target = Object.hasOwn(cfg.models, wanted) ? wanted : cfg.aliases?.[wanted];
+  let target = Object.hasOwn(cfg.models, wanted) ? wanted : cfg.aliases && Object.hasOwn(cfg.aliases, wanted) ? cfg.aliases[wanted] : undefined;
+  if (target === undefined && typeof cfg.fallback === "string") {
+    target = cfg.fallback;
+    if (!fallbackLogged.has(wanted)) {
+      fallbackLogged.add(wanted);
+      console.log(`[models] no alias for ${String(wanted).slice(0, 80)}; using fallback ${target}`);
+    }
+  }
   const entry = target === undefined || !Object.hasOwn(cfg.models, target) ? undefined : cfg.models[target];
   if (!entry) throw new Error(`unsupported model: ${wanted}`);
   return { wanted, entry };

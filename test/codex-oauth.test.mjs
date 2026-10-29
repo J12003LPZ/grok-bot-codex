@@ -259,8 +259,12 @@ test("preserves custom tools, file inputs, and cancellation", async (t) => {
 });
 
 test("unsupported models fail closed and log summaries contain no prompt text", () => {
-  assert.throws(() => resolveModel({ modelId: "not-a-configured-model" }), /unsupported model/);
-  assert.throws(() => resolveModel({ modelId: "toString" }), /unsupported model/);
+  const strict = { default: "m", models: { m: { provider: "codex-oauth", model: "gpt-5.6-luna" } }, aliases: { a: "m" } };
+  assert.throws(() => resolveModel({ modelId: "not-a-configured-model" }, strict), /unsupported model/);
+  assert.throws(() => resolveModel({ modelId: "toString" }, strict), /unsupported model/);
+  assert.throws(() => resolveModel({ modelId: "x" }, { ...strict, aliases: { x: "missing" } }), /unsupported model/);
+  assert.throws(() => resolveModel({ modelId: "x" }, { ...strict, fallback: "missing" }), /unsupported model/);
+  assert.equal(resolveModel({ modelId: "grok-9" }, { ...strict, fallback: "m" }).entry.model, "gpt-5.6-luna");
   assert.doesNotMatch(requestSummary({ modelId: "model", tools: [], messages: [{ role: 1, text: "private prompt" }] }), /private prompt/);
 });
 
@@ -269,6 +273,20 @@ test("the desktop's built-in model ids resolve to Codex models through aliases",
   assert.equal(entry.provider, "codex-oauth");
   assert.equal(resolveModel({ modelId: "grok-4.5-medium" }).entry.model, "gpt-5.6-terra");
   assert.equal(resolveModel({ modelId: "grok-4.5-fast-high" }).entry.model, "gpt-5.6-sol");
+  // Any other id the app asks for (its computer-use subagent, ids from newer
+  // versions) still runs on a Codex model through "fallback".
+  for (const id of ["claude-opus-4-8", "grok-99"]) {
+    const { entry } = resolveModel({ modelId: id });
+    assert.equal(entry.provider, "codex-oauth", id);
+    assert.match(entry.model, /^gpt-/, id);
+  }
+});
+
+test("models.json only configures Codex models", async () => {
+  const cfg = JSON.parse((await import("node:fs")).readFileSync(new URL("../models.json", import.meta.url), "utf8"));
+  for (const [name, entry] of Object.entries(cfg.models)) assert.equal(entry.provider, "codex-oauth", name);
+  for (const target of [...Object.values(cfg.aliases ?? {}), cfg.fallback, cfg.default]) assert.ok(Object.hasOwn(cfg.models, target), target);
+  assert.doesNotMatch(JSON.stringify(cfg), /claude|anthropic/i);
 });
 
 test("account model catalog and reasoning effort are validated before inference", async (t) => {
