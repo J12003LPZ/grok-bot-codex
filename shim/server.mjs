@@ -17,6 +17,7 @@ import { clientLogHandlers } from "./client-log.mjs";
 import { createBoxController } from "./box.mjs";
 import { createCatalog, createCatalogIndex } from "./catalog.mjs";
 import { PluginStore, pluginHandlers } from "./plugins.mjs";
+import { createConnectors } from "./connectors.mjs";
 
 // Starts the box container on demand (EnsureSandBox). SHIM_BOX_AUTOSTART=0
 // leaves it to computerctl.sh and reports it as always running.
@@ -30,10 +31,20 @@ const box =
 const generated = loadGenerated();
 // Public Marketplace catalog reads go upstream anonymously; SHIM_PUBLIC_CATALOG=0 keeps them local (empty).
 const catalog = createCatalog({ enabled: process.env.SHIM_PUBLIC_CATALOG !== "0" });
+const HTTP_PORT = Number(process.env.HTTP_PORT ?? 8444);
+// Connector sign-in lands here in the user's browser. Google desktop OAuth
+// clients accept any port on 127.0.0.1, so this works with their clients too.
+const OAUTH_CALLBACK_PATH = "/mcp-oauth/callback";
+const pluginStore = new PluginStore();
+const catalogIndex = generated ? createCatalogIndex(catalog, generated.root) : null;
+const connectors = catalogIndex
+  ? createConnectors({ plugins: pluginStore, catalog: catalogIndex, redirectUri: `http://127.0.0.1:${HTTP_PORT}${OAUTH_CALLBACK_PATH}` })
+  : null;
 const handlers = {
   ...agentHandlers(new AgentStore()),
   ...clientLogHandlers(process.env.SHIM_CLIENT_LOG),
-  ...(generated ? pluginHandlers(new PluginStore(), createCatalogIndex(catalog, generated.root)) : {}),
+  ...(catalogIndex ? pluginHandlers(pluginStore, catalogIndex) : {}),
+  ...(connectors ? connectors.handlers : {}),
 };
 const rpc = generated ? createRpc({ ...generated, handlers }) : null;
 if (!generated) console.log("no generated/app.proto: run `npm run gen-proto -- <path to proto.cjs>` for agent RPCs");
@@ -215,6 +226,11 @@ const handle = async (req, res) => {
           res.end(JSON.stringify({ access_token: accessToken, refresh_token: refreshToken }));
           out = "oauth-refresh";
         }
+      } else if (pathname === OAUTH_CALLBACK_PATH && req.method === "GET" && connectors) {
+        const { status, html } = await connectors.callback(new URL(p, "http://localhost").searchParams);
+        res.writeHead(status, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer" });
+        res.end(html);
+        out = `connector sign-in ${status}`;
       } else if (pathname === "/health") {
         cors(res);
         res.writeHead(200, { "content-type": "application/json" });
@@ -349,7 +365,6 @@ server.listen(PORT, "127.0.0.1", () => {
 // Plain HTTP on loopback for the Windows app and the box host. The app accepts
 // http://localhost as a dev backend, so no TLS verification has to be disabled.
 // Windows resolves "localhost" to ::1 first, so listen on both stacks.
-const HTTP_PORT = Number(process.env.HTTP_PORT ?? 8444);
 for (const host of ["127.0.0.1", "::1"]) {
   const plain = http.createServer(guarded);
   plain.on("error", (err) => {
