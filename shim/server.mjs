@@ -14,6 +14,8 @@ import { agentHandlers } from "./handlers.mjs";
 import { RpcError, callerOf, createRpc, loadGenerated } from "./rpc.mjs";
 import { clientLogHandlers } from "./client-log.mjs";
 import { createBoxController } from "./box.mjs";
+import { createCatalog, createCatalogIndex } from "./catalog.mjs";
+import { PluginStore, pluginHandlers } from "./plugins.mjs";
 
 // Starts the box container on demand (EnsureSandBox). SHIM_BOX_AUTOSTART=0
 // leaves it to computerctl.sh and reports it as always running.
@@ -25,7 +27,13 @@ const box =
 // Typed RPCs need the schema generated from the installed app. Without it the
 // server still runs; those calls fall back to empty replies.
 const generated = loadGenerated();
-const handlers = { ...agentHandlers(new AgentStore()), ...clientLogHandlers(process.env.SHIM_CLIENT_LOG) };
+// Public Marketplace catalog reads go upstream anonymously; SHIM_PUBLIC_CATALOG=0 keeps them local (empty).
+const catalog = createCatalog({ enabled: process.env.SHIM_PUBLIC_CATALOG !== "0" });
+const handlers = {
+  ...agentHandlers(new AgentStore()),
+  ...clientLogHandlers(process.env.SHIM_CLIENT_LOG),
+  ...(generated ? pluginHandlers(new PluginStore(), createCatalogIndex(catalog, generated.root)) : {}),
+};
 const rpc = generated ? createRpc({ ...generated, handlers }) : null;
 if (!generated) console.log("no generated/app.proto: run `npm run gen-proto -- <path to proto.cjs>` for agent RPCs");
 import { statsigBootstrap } from "./statsig.mjs";
@@ -236,6 +244,16 @@ const handle = async (req, res) => {
           }
           res.end(CONNECT_END_FRAME);
           out = `inference ${n} frames`;
+        }
+      } else if (catalog.handles(pathname) && ct.includes("application/proto")) {
+        const bytes = await catalog.read(pathname, body);
+        if (bytes === null) {
+          out = `catalog unavailable; ${stubResponse(req, p, res)}`;
+        } else {
+          cors(res);
+          res.writeHead(200, { "content-type": "application/proto" });
+          res.end(bytes);
+          out = `catalog ${pathname.split("/").pop()} ${bytes.length}B`;
         }
       } else if (rpc?.handles(pathname) && ct.includes("application/proto")) {
         const method = pathname.split("/").pop();
