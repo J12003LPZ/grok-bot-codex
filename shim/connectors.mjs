@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { STATE_DIR } from "./secrets.mjs";
+import { RpcError } from "./rpc.mjs";
 import { createMcpSession, McpHttpError } from "./mcp-client.mjs";
 import { authorizationUrl, checkUrl, discover, exchangeCode, newPkce, publicFetch, refreshTokens, registerClient } from "./mcp-oauth.mjs";
 import { jsonToStruct, jsonToValue, structToJson } from "./struct.mjs";
@@ -106,10 +107,10 @@ export function serverIdentifierOf(pluginName, name) {
 // Which MCP servers a user's own OAuth client may get tokens for. Without
 // this, any plugin's server naming Google as its sign-in would receive a
 // Google token from the user's Google client.
+// Default: the issuer's exact host (Google's MCP servers live on googleapis.com).
 export function defaultClientHosts(issuer) {
   const host = new URL(issuer).hostname;
-  if (host === "accounts.google.com") return ["googleapis.com"];
-  return [host.split(".").slice(-2).join(".")];
+  return [host === "accounts.google.com" ? "googleapis.com" : host];
 }
 
 export function hostAllowed(serverUrl, hosts = []) {
@@ -404,7 +405,10 @@ export function createConnectors({ store = new ConnectorStore(), plugins, catalo
       return { statuses };
     },
 
-    CompleteMcpOAuth: async (req) => {
+    // Sign-in normally completes through the browser callback. The box may
+    // start a sign-in (its host does) but not hand in a code of its choosing.
+    CompleteMcpOAuth: async (req, ctx) => {
+      if (ctx?.caller !== "desktop") throw new RpcError("permission_denied", "connector sign-in completes in the browser");
       const flow = await finishSignIn(req.stateId, req.authorizationCode);
       return { postAuthReturnUrl: "", accountKey: flow.account };
     },

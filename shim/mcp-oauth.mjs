@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import dns from "node:dns/promises";
+import https from "node:https";
 import net from "node:net";
 
 // OAuth for remote MCP servers, as the MCP authorization spec lays it out:
@@ -43,12 +44,48 @@ export function isPublicAddress(address) {
   return !PRIVATE_V6.check(address, "ipv6");
 }
 
-export async function publicFetch(url, init) {
+// The address is checked inside the socket's own DNS lookup, so the address
+// checked is the one connected to (a second lookup could be rebound).
+function publicLookup(hostname, options, callback) {
+  dns.lookup(hostname, { all: true, verbatim: true }).then(
+    (addrs) => {
+      const bad = addrs.find((a) => !isPublicAddress(a.address));
+      if (!addrs.length || bad) return callback(new Error(`${hostname} is not a public address`));
+      if (options?.all) return callback(null, addrs);
+      callback(null, addrs[0].address, addrs[0].family);
+    },
+    (err) => callback(err),
+  );
+}
+
+// fetch()-shaped (the subset used here) over node:https with publicLookup.
+// Redirects are never followed.
+export async function publicFetch(url, init = {}) {
   const u = checkUrl(url, "connector URL");
   const host = u.hostname.replace(/^\[|\]$/g, "");
-  const addrs = net.isIP(host) ? [{ address: host }] : await dns.lookup(host, { all: true, verbatim: true });
-  if (!addrs.length || !addrs.every((a) => isPublicAddress(a.address))) throw new Error(`${u.hostname} is not a public address`);
-  return fetch(url, init);
+  if (net.isIP(host) && !isPublicAddress(host)) throw new Error(`${u.hostname} is not a public address`);
+  const headers = Object.fromEntries(new Headers(init.headers ?? {}));
+  let body = init.body;
+  if (body instanceof URLSearchParams) {
+    body = body.toString();
+    headers["content-type"] ??= "application/x-www-form-urlencoded";
+  }
+  return new Promise((resolve, reject) => {
+    const req = https.request(u, { method: init.method ?? "GET", headers, lookup: publicLookup, signal: init.signal }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("error", reject);
+      res.on("end", () => {
+        const resHeaders = new Headers();
+        for (const [k, v] of Object.entries(res.headers)) resHeaders.set(k, Array.isArray(v) ? v.join(", ") : String(v));
+        const status = res.statusCode ?? 502;
+        const noBody = status === 204 || status === 304;
+        resolve(new Response(noBody ? null : Buffer.concat(chunks), { status, headers: resHeaders }));
+      });
+    });
+    req.on("error", reject);
+    req.end(body === undefined ? undefined : body);
+  });
 }
 
 // { status, body }; body is undefined unless the reply was OK JSON. Network

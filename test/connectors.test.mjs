@@ -292,6 +292,26 @@ test("connector traffic only goes to public HTTPS addresses", async () => {
   await assert.rejects(publicFetch("https://localhost:8444/"), /not a public address/);
 });
 
+test("only the desktop may hand in a sign-in code", async () => {
+  const { c, id, store } = setup();
+  const { statuses } = await c.handlers.CheckHttpMcpStatus({ serverIds: [id] });
+  const stateId = new URL(statuses[0].authUrl).searchParams.get("state");
+  await assert.rejects(c.handlers.CompleteMcpOAuth({ stateId, authorizationCode: "good-code" }, { caller: "box" }), /browser/);
+  assert.equal(store.token(MCP_URL), undefined);
+  await c.handlers.CompleteMcpOAuth({ stateId, authorizationCode: "good-code" }, { caller: "desktop" });
+  assert.equal(store.token(MCP_URL).accessToken, "access-1");
+});
+
+test("a saved client defaults to its issuer's exact host", () => {
+  assert.deepEqual(defaultClientHosts("https://accounts.google.com/"), ["googleapis.com"]);
+  assert.deepEqual(defaultClientHosts("https://login.example.co.uk/oauth"), ["login.example.co.uk"]);
+});
+
+test("publicFetch checks the address it connects to", async () => {
+  await assert.rejects(publicFetch("https://localhost.localdomain.invalid/"), /ENOTFOUND|EAI_AGAIN|not a public/);
+  await assert.rejects(publicFetch("https://[::1]:8444/"), /not a public address/);
+});
+
 test("signing out deletes the stored token", async () => {
   const { c, id, store } = setup();
   await signIn(c, id);
