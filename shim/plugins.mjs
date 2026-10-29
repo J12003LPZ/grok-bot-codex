@@ -67,6 +67,23 @@ export class PluginStore {
   }
 }
 
+// pinnedGitRef ends up in the box host's git clone. Accept only an empty
+// value, a commit SHA, or a plain ref name (no leading "-", no "..").
+const GIT_REF = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
+export function checkGitRef(ref) {
+  if (ref === undefined || ref === "") return ref;
+  if (typeof ref !== "string" || !GIT_REF.test(ref) || ref.includes("..") || ref.endsWith(".lock") || ref.endsWith("/")) {
+    throw new RpcError("invalid_argument", "pinnedGitRef must be a commit SHA or a plain ref name");
+  }
+  return ref;
+}
+
+// Only the desktop changes what is installed. The box runs the agent's own
+// commands, so it may read the effective list but not edit it.
+function desktopOnly(ctx) {
+  if (ctx?.caller !== "desktop") throw new RpcError("permission_denied", "plugin installs can only be changed from the desktop app");
+}
+
 // `catalog` answers plugin(id) -> Plugin object (or undefined) and
 // marketplaces() -> Marketplace objects, both from the public catalog.
 export function pluginHandlers(store, catalog) {
@@ -85,23 +102,27 @@ export function pluginHandlers(store, catalog) {
   };
 
   return {
-    InstallUserPlugin: async (req) => {
+    InstallUserPlugin: async (req, ctx) => {
+      desktopOnly(ctx);
       if (!req.pluginId) throw new RpcError("invalid_argument", "pluginId is required");
+      const pinnedGitRef = checkGitRef(req.pinnedGitRef) ?? "";
       if ((await catalog.plugin(req.pluginId)) === undefined) throw new RpcError("not_found", `plugin ${req.pluginId} is not in the public catalog`);
-      return installReply(store.install(req.pluginId, { pinnedGitRef: req.pinnedGitRef ?? "", variables: req.variables }));
+      return installReply(store.install(req.pluginId, { pinnedGitRef, variables: req.variables }));
     },
 
-    UpdateUserPluginInstall: async (req) => {
+    UpdateUserPluginInstall: async (req, ctx) => {
+      desktopOnly(ctx);
       const patch = {};
       if (req.isEnabled !== undefined) patch.isEnabled = req.isEnabled;
-      if (req.pinnedGitRef !== undefined) patch.pinnedGitRef = req.pinnedGitRef;
+      if (req.pinnedGitRef !== undefined) patch.pinnedGitRef = checkGitRef(req.pinnedGitRef);
       if (req.variables !== undefined) patch.variables = req.variables;
       const install = store.update(req.pluginId, patch);
       if (!install) throw new RpcError("not_found", `plugin ${req.pluginId} is not installed`);
       return installReply(install);
     },
 
-    UninstallUserPlugin: (req) => {
+    UninstallUserPlugin: (req, ctx) => {
+      desktopOnly(ctx);
       store.remove(req.pluginId);
       return {};
     },

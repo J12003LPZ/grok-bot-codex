@@ -289,13 +289,26 @@ const handle = async (req, res) => {
     summary(req.method, p, ct, body.length, out);
 };
 
+// Both listeners refuse other Host names (DNS rebinding) and any request with
+// an Origin header (web pages); the app and the box host send neither.
+const guarded = (req, res) => {
+  const verdict = checkLoopbackRequest(req);
+  if (!verdict.ok) {
+    console.error(`[guard] refused ${req.method} ${(req.url ?? "/").split("?")[0].slice(0, 80)}: ${verdict.reason} (host=${String(req.headers.host).slice(0, 60)})`);
+    res.writeHead(verdict.status, { "content-type": "text/plain" });
+    res.end(verdict.reason);
+    return;
+  }
+  return handle(req, res);
+};
+
 // HTTPS for the Linux host launcher, which trusts certs/rootCA.pem.
 const server = https.createServer(
   {
     key: fs.readFileSync(path.join(ROOT, "certs", "localhost.key")),
     cert: fs.readFileSync(path.join(ROOT, "certs", "localhost.pem")),
   },
-  handle,
+  guarded,
 );
 
 server.listen(PORT, "127.0.0.1", () => {
@@ -308,16 +321,7 @@ server.listen(PORT, "127.0.0.1", () => {
 // Windows resolves "localhost" to ::1 first, so listen on both stacks.
 const HTTP_PORT = Number(process.env.HTTP_PORT ?? 8444);
 for (const host of ["127.0.0.1", "::1"]) {
-  const plain = http.createServer((req, res) => {
-    const verdict = checkLoopbackRequest(req);
-    if (!verdict.ok) {
-      console.error(`[guard] refused ${req.method} ${(req.url ?? "/").split("?")[0].slice(0, 80)}: ${verdict.reason} (host=${String(req.headers.host).slice(0, 60)})`);
-      res.writeHead(verdict.status, { "content-type": "text/plain" });
-      res.end(verdict.reason);
-      return;
-    }
-    return handle(req, res);
-  });
+  const plain = http.createServer(guarded);
   plain.on("error", (err) => {
     if (err.code !== "EADDRNOTAVAIL") console.error(`http listen ${host}: ${err.code ?? err.message}`);
   });
