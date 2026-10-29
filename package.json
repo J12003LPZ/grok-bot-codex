@@ -11,6 +11,8 @@
     "auth": "node shim/auth.mjs",
     "gen-proto": "node scripts/gen-proto.mjs",
     "windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/grokbot-windows.ps1",
+    "windows:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-windows.ps1",
+    "windows:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-windows.ps1 -Uninstall",
     "doctor": "node scripts/doctor.mjs",
     "check": "node scripts/check.mjs",
     "test": "node --test test/*.test.mjs"

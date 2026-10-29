@@ -1,31 +1,42 @@
 # Runs the installed Windows Grok Bot on your ChatGPT plan.
-#   1. builds generated/ from the installed app if it is missing or older,
+#   1. builds generated/ from the installed app if it is missing or from
+#      another app version,
 #   2. starts the shim (http://localhost:8444) if nothing listens there,
-#   3. opens Grok Bot in its own profile against the shim.
+#   3. opens Grok Bot against the shim (skipped with -ShimOnly).
 # The shim starts the box container (computerctl.sh) when the app asks for it.
 # Run `npm run auth` once first. Usage: powershell -File scripts\grokbot-windows.ps1
+# scripts\install-windows.ps1 makes every launch of Grok Bot use the shim.
 param(
   [string]$App = "$env:LOCALAPPDATA\Programs\Grok Bot\Grok Bot.exe",
-  [string]$ProfileDir = "$env:LOCALAPPDATA\grokbot-shim\profile",
+  # Empty: the app's default profile, the same one the Start menu and the
+  # app's own post-update relaunch use.
+  [string]$ProfileDir = "",
   [int]$Port = 8444,
   # Turns off Chromium's renderer sandbox. Only needed when the Computer preview
   # stays blank; leave it off otherwise.
-  [switch]$NoSandbox
+  [switch]$NoSandbox,
+  # Prepare the schema and start the shim, but do not open the app (logon task).
+  [switch]$ShimOnly
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 
 if (-not (Test-Path $App)) { throw "Grok Bot not found at $App (pass -App <path to Grok Bot.exe>)" }
 
-# Rebuild the schema whenever the installed app is newer than it (an app
-# update ships new messages). A running shim keeps the old schema until it
-# restarts, so restart it too.
+# Rebuild the schema whenever the installed app version differs from the one
+# it was built from (an update ships new messages). The installer keeps
+# app.asar's build timestamp, so compare versions, not file times. A running
+# shim keeps the old schema until it restarts, so restart it too.
 $asar = Join-Path (Split-Path $App) "resources\app.asar"
 $proto = Join-Path $Root "generated\app.proto"
-$staleSchema = -not (Test-Path $proto) -or (Get-Item $asar).LastWriteTime -gt (Get-Item $proto).LastWriteTime
+$stamp = Join-Path $Root "generated\app-version.txt"
+$appVersion = (Get-Item $App).VersionInfo.ProductVersion
+$builtFor = if (Test-Path $stamp) { (Get-Content $stamp -Raw).Trim() } else { "" }
+$staleSchema = -not (Test-Path $proto) -or $builtFor -ne $appVersion
 if ($staleSchema) {
   & node (Join-Path $Root "scripts\gen-proto.mjs") $asar (Join-Path $Root "generated")
   if ($LASTEXITCODE -ne 0) { throw "gen-proto failed" }
+  Set-Content -Path $stamp -Value $appVersion -NoNewline
   Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
     ForEach-Object { Get-CimInstance Win32_Process -Filter "ProcessId=$($_.OwningProcess)" } |
     Where-Object { $_.CommandLine -like "*shim*server.mjs*" } |
@@ -52,6 +63,10 @@ if (-not $listening) {
 # (EnsureSandBox), so it is not started here. It needs Git Bash for that.
 $bash = @("$env:ProgramFiles\Git\bin\bash.exe", "${env:ProgramFiles(x86)}\Git\bin\bash.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $bash) { throw "Git Bash not found; install Git for Windows" }
+if ($ShimOnly) {
+  Write-Host "shim ready on http://localhost:$Port (Grok Bot $appVersion)"
+  return
+}
 
 # Dev sign-in against a localhost backend: no Grok Bot subscription is involved.
 $env:SAND_BACKEND_URL = "http://localhost:$Port"
@@ -59,11 +74,14 @@ $env:SAND_DEV_LOGIN = "Ultra"
 # The shim only accepts this per-install address (state/desktop-login.token).
 $env:SAND_DEV_LOGIN_EMAIL = (& node (Join-Path $Root "shim\secrets.mjs") desktop-login-email)
 if ($LASTEXITCODE -ne 0 -or -not $env:SAND_DEV_LOGIN_EMAIL) { throw "could not read the sign-in address" }
-New-Item -ItemType Directory -Force $ProfileDir | Out-Null
-$appArgs = @("--user-data-dir=`"$ProfileDir`"")
+$appArgs = @()
+if ($ProfileDir) {
+  New-Item -ItemType Directory -Force $ProfileDir | Out-Null
+  $appArgs += "--user-data-dir=`"$ProfileDir`""
+}
 if ($NoSandbox) {
   Write-Warning "starting with --no-sandbox: web content in the app runs without Chromium's sandbox"
   $appArgs += "--no-sandbox"
 }
-Start-Process $App -ArgumentList $appArgs
-Write-Host "Grok Bot started against http://localhost:$Port (profile $ProfileDir)"
+if ($appArgs.Count -gt 0) { Start-Process $App -ArgumentList $appArgs } else { Start-Process $App }
+Write-Host "Grok Bot $appVersion started against http://localhost:$Port"

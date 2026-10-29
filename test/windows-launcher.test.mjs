@@ -21,6 +21,29 @@ test("launcher never disables TLS checks", () => {
   for (const flag of [/ignore-certificate-errors/i, /NODE_TLS_REJECT_UNAUTHORIZED/]) assert.doesNotMatch(ps1, flag);
 });
 
+const install = fs.readFileSync(new URL("../scripts/install-windows.ps1", import.meta.url), "utf8");
+
+test("the schema is rebuilt when the app version changes, not by file time", () => {
+  assert.match(ps1, /VersionInfo\.ProductVersion/);
+  assert.match(ps1, /\$builtFor -ne \$appVersion/);
+  assert.doesNotMatch(ps1, /LastWriteTime/);
+});
+
+test("-ShimOnly stops before opening the app", () => {
+  assert.ok(ps1.indexOf("if ($ShimOnly)") < ps1.indexOf("Start-Process $App"));
+});
+
+test("install sets the sign-in variables per user and a logon task, and can undo both", () => {
+  for (const v of ["SAND_BACKEND_URL", "SAND_DEV_LOGIN", "SAND_DEV_LOGIN_EMAIL"]) assert.match(install, new RegExp(`"${v}"`));
+  assert.match(install, /SetEnvironmentVariable\([^)]*"User"\)/);
+  assert.doesNotMatch(install, /"Machine"/);
+  assert.match(install, /New-ScheduledTaskTrigger -AtLogOn/);
+  assert.match(install, /-RunLevel Limited/);
+  assert.match(install, /-ShimOnly/);
+  assert.match(install, /if \(\$Uninstall\) \{[\s\S]*SetEnvironmentVariable\(\$v, \$null, "User"\)[\s\S]*Unregister-ScheduledTask/);
+  assert.doesNotMatch(install, /shim@local/);
+});
+
 test("the box keeps its baked host bundle", () => {
   assert.match(ctl, /-e SAND_BOX_AUTO_UPDATE=0 /);
 });

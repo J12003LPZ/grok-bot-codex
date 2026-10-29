@@ -243,19 +243,29 @@ ChatGPT plan; no Grok Bot subscription is used.
 
 ```powershell
 npm ci
-npm run auth      # once: Sign in with ChatGPT
-npm run windows   # shim + box + app
+npm run auth              # once: Sign in with ChatGPT
+npm run windows:install   # once: every launch of Grok Bot uses the shim
 ```
+
+After `windows:install`, open Grok Bot from the Start menu as usual. It sets
+`SAND_BACKEND_URL`, `SAND_DEV_LOGIN` and `SAND_DEV_LOGIN_EMAIL` as user
+environment variables and adds a logon task ("Grok Bot Codex shim") that
+starts the shim. That covers launches the launcher never sees, such as the
+app's own relaunch after it updates itself; without it an updated app comes
+back on the vendor's browser sign-in. `npm run windows:uninstall` removes both.
+The task points at this checkout, so re-run the install if you move it.
+
+`npm run windows` does the same for one launch without installing anything.
 
 `npm run windows` runs `scripts/grokbot-windows.ps1`, which:
 
 1. builds `generated/` (message schemas read from the installed app's
-   `app.asar`; nothing from the app is committed), again whenever the app is
-   updated;
+   `app.asar`; nothing from the app is committed), again whenever the app
+   version changes;
 2. starts the shim on `http://localhost:8444` (loopback only, log in
    `state/shim.log`);
-3. opens Grok Bot in its own profile (`%LOCALAPPDATA%\grokbot-shim\profile`)
-   with a local dev sign-in under a per-install address.
+3. opens Grok Bot (its default profile) with a local dev sign-in under a
+   per-install address.
 
 The Bot's Linux computer is the box container (Chrome on an XFCE desktop,
 shown in the app's Computer panel). The shim starts it when the app asks for
@@ -269,7 +279,8 @@ public git repository. Connectors that need the vendor account
 (`GetAvailableMcpServers`) stay empty.
 
 Checked against Grok Bot 0.75.8 and 0.78.1: sign-in, chat, plugins and
-computer use. After an app update, run `npm run windows` again.
+computer use. App updates are handled by the install above: the schema is
+rebuilt for the new version at the next logon or `npm run windows`.
 
 How 0.75.8 is wired:
 
