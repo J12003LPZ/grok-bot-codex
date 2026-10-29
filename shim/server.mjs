@@ -3,7 +3,8 @@ import https from "node:https";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { mintJwt } from "./jwt.mjs";
+import { bearerOf, mintJwt, verifyJwt } from "./jwt.mjs";
+import { desktopLoginEmail } from "./secrets.mjs";
 import { CONNECT_END_FRAME, envelope, parseConnectFrames } from "./connect.mjs";
 import { decodeStreamRequest, runSession, requestSummary } from "./inference.mjs";
 import { encodeAvailableModels } from "./models.mjs";
@@ -11,7 +12,7 @@ import { boxConfig, encodeEnsureSandBox, encodeRunState } from "./sandbox.mjs";
 import { checkLoopbackRequest } from "./guard.mjs";
 import { AgentStore } from "./agents.mjs";
 import { agentHandlers } from "./handlers.mjs";
-import { RpcError, callerOf, createRpc, loadGenerated } from "./rpc.mjs";
+import { RpcError, createRpc, loadGenerated } from "./rpc.mjs";
 import { clientLogHandlers } from "./client-log.mjs";
 import { createBoxController } from "./box.mjs";
 import { createCatalog, createCatalogIndex } from "./catalog.mjs";
@@ -48,7 +49,22 @@ const MODE = process.env.MODE ?? "stub"; // stub | forward
 const UPSTREAM = process.env.UPSTREAM ?? "https://api2.cursor.sh";
 const STATE_DIR = path.join(ROOT, "state");
 fs.mkdirSync(STATE_DIR, { recursive: true });
-const HOST_TOKEN_FILE = path.join(STATE_DIR, "host-token.json");
+// state/box/ is the only part of state/ mounted into the box container.
+const BOX_STATE_DIR = path.join(STATE_DIR, "box");
+fs.mkdirSync(BOX_STATE_DIR, { recursive: true });
+const HOST_TOKEN_FILE = path.join(BOX_STATE_DIR, "host-token.json");
+const DESKTOP_LOGIN_EMAIL = desktopLoginEmail();
+
+function desktopTokens() {
+  return {
+    accessToken: mintJwt({ aud: "desktop" }),
+    refreshToken: mintJwt({ aud: "desktop-refresh", ttlSec: 86400 * 30 }),
+  };
+}
+
+// The desktop proves itself with a token the shim signed for it; anything
+// else (the box host, or a request without a valid token) is treated as the box.
+const callerOf = (req) => (verifyJwt(bearerOf(req), "desktop") ? "desktop" : "box");
 const HOST_TOKEN_TTL_SEC = 3600;
 const HOST_TOKEN_ROTATE_MS = 30 * 60 * 1000;
 
@@ -66,7 +82,7 @@ function writeHostToken(jwt) {
 }
 
 function rotateHostToken() {
-  writeHostToken(mintJwt({ ttlSec: HOST_TOKEN_TTL_SEC }));
+  writeHostToken(mintJwt({ aud: "box", ttlSec: HOST_TOKEN_TTL_SEC }));
 }
 
 // The packaged desktop normally refreshes this credential through its auth
@@ -167,25 +183,38 @@ const handle = async (req, res) => {
     let out;
     try {
       if (pathname === "/auth/cursor_dev_session_token") {
-        const accessToken = mintJwt();
-        const refreshToken = mintJwt({ ttlSec: 86400 * 30 });
-        writeHostToken(accessToken);
+        // Dev sign-in has no password: only the per-install address the
+        // launcher passes as SAND_DEV_LOGIN_EMAIL gets a desktop session.
+        const email = new URL(p, "http://localhost").searchParams.get("email");
         cors(res);
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ accessToken, refreshToken, authId: "shim-local-user" }));
-        out = "dev-session-token";
+        if (email !== DESKTOP_LOGIN_EMAIL) {
+          res.writeHead(403, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "unknown sign-in address; start Grok Bot with the launcher" }));
+          out = "dev-session-token refused";
+        } else {
+          const { accessToken, refreshToken } = desktopTokens();
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ accessToken, refreshToken, authId: "shim-local-user" }));
+          out = "dev-session-token";
+        }
       } else if (pathname === "/oauth/token") {
-        const accessToken = mintJwt();
-        writeHostToken(accessToken);
+        let refresh = null;
+        try {
+          refresh = JSON.parse(body.toString("utf8")).refresh_token;
+        } catch {
+          // not JSON: refused below
+        }
         cors(res);
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(
-          JSON.stringify({
-            access_token: accessToken,
-            refresh_token: mintJwt({ ttlSec: 86400 * 30 }),
-          }),
-        );
-        out = "oauth-refresh";
+        if (!verifyJwt(refresh, "desktop-refresh")) {
+          res.writeHead(401, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid_grant" }));
+          out = "oauth-refresh refused";
+        } else {
+          const { accessToken, refreshToken } = desktopTokens();
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ access_token: accessToken, refresh_token: refreshToken }));
+          out = "oauth-refresh";
+        }
       } else if (pathname === "/health") {
         cors(res);
         res.writeHead(200, { "content-type": "application/json" });

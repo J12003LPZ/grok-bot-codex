@@ -24,3 +24,13 @@ test("launcher never disables TLS checks", () => {
 test("the box keeps its baked host bundle", () => {
   assert.match(ctl, /-e SAND_BOX_AUTO_UPDATE=0 /);
 });
+
+test("the launcher signs in with the per-install address, not a fixed one", () => {
+  assert.match(ps1, /secrets\.mjs"\) desktop-login-email/);
+  assert.doesNotMatch(ps1, /SAND_DEV_LOGIN_EMAIL = "shim@local"/);
+});
+
+test("only state/box is mounted into the box", () => {
+  assert.match(ctl, /STATE_MOUNT="\$ROOT\/state\/box"/);
+  assert.doesNotMatch(ctl, /STATE_MOUNT="\$ROOT\/state"$/m);
+});

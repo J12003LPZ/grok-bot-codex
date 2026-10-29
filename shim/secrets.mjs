@@ -23,8 +23,16 @@ export function loadOrCreateToken(name, dir = STATE_DIR) {
   return token;
 }
 
-// `node shim/secrets.mjs gateway` prints the token for computerctl.sh.
+// The address the desktop signs in with (SAND_DEV_LOGIN_EMAIL). Dev sign-in has
+// no password, so the shim only accepts this per-install address; the box
+// cannot read it and so cannot sign in as the desktop.
+export function desktopLoginEmail(dir = STATE_DIR) {
+  return `shim+${loadOrCreateToken("desktop-login", dir).slice(0, 32)}@local`;
+}
+
+// `node shim/secrets.mjs gateway` prints the token for computerctl.sh;
+// `node shim/secrets.mjs desktop-login-email` prints the sign-in address.
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const name = process.argv[2] ?? "gateway";
-  process.stdout.write(loadOrCreateToken(name));
+  process.stdout.write(name === "desktop-login-email" ? desktopLoginEmail() : loadOrCreateToken(name));
 }

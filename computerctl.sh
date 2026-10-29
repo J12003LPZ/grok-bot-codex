@@ -71,8 +71,11 @@ start() {
     # SAND_BOX_AUTO_UPDATE=0 keeps the host bundle baked into the image. Without
     # it the supervisor swaps in the newest published host on boot, and hosts
     # from ce1748b on refuse every local ("box") turn, so nothing would run here.
-    STATE_MOUNT="$ROOT/state"
-    if command -v cygpath >/dev/null 2>&1; then STATE_MOUNT="$(cygpath -m "$ROOT/state")"; fi
+    # Only state/box (the box host's own token) is mounted. The rest of state/
+    # holds the shim's signing key and the desktop's sign-in secret.
+    mkdir -p "$ROOT/state/box"
+    STATE_MOUNT="$ROOT/state/box"
+    if command -v cygpath >/dev/null 2>&1; then STATE_MOUNT="$(cygpath -m "$ROOT/state/box")"; fi
     docker run -d \
       --name "$CONTAINER" \
       --restart unless-stopped \

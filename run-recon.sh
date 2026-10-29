@@ -7,7 +7,7 @@ GROKBOT_APP="${GROKBOT_APP:-/opt/Grok Bot/grok-bot}"
 export SAND_BACKEND_URL="${SAND_BACKEND_URL:-https://localhost:8443}"
 export NODE_EXTRA_CA_CERTS="$ROOT/certs/rootCA.pem"
 export SAND_DEV_LOGIN="${SAND_DEV_LOGIN:-Ultra}"
-export SAND_DEV_LOGIN_EMAIL="${SAND_DEV_LOGIN_EMAIL:-shim@local}"
+export SAND_DEV_LOGIN_EMAIL="${SAND_DEV_LOGIN_EMAIL:-$(node "$ROOT/shim/secrets.mjs" desktop-login-email)}"
 export SAND_HOST_GATEWAY_URL="${SAND_HOST_GATEWAY_URL:-http://localhost:8550}"
 export SAND_HOST_GATEWAY_TOKEN="${SAND_HOST_GATEWAY_TOKEN:-shim-gateway-token}"
 

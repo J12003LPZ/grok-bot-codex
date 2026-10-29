@@ -5,14 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import protobuf from "protobufjs";
 import { AgentStore, newAgent } from "../shim/agents.mjs";
-import { RpcError, callerOf, createRpc } from "../shim/rpc.mjs";
-
-test("callerOf tells the box host from the desktop by Host header", () => {
-  assert.equal(callerOf({ headers: { host: "host.docker.internal:8444" } }), "box");
-  assert.equal(callerOf({ headers: { host: "HOST.DOCKER.INTERNAL" } }), "box");
-  assert.equal(callerOf({ headers: { host: "localhost:8444" } }), "desktop");
-  assert.equal(callerOf({ headers: {} }), "desktop");
-});
+import { RpcError, createRpc } from "../shim/rpc.mjs";
 
 test("RpcError carries the Connect code, HTTP status and JSON body", () => {
   const err = new RpcError("unimplemented", "nope");

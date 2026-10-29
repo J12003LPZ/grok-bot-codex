@@ -56,7 +56,9 @@ if (-not $bash) { throw "Git Bash not found; install Git for Windows" }
 # Dev sign-in against a localhost backend: no Grok Bot subscription is involved.
 $env:SAND_BACKEND_URL = "http://localhost:$Port"
 $env:SAND_DEV_LOGIN = "Ultra"
-$env:SAND_DEV_LOGIN_EMAIL = "shim@local"
+# The shim only accepts this per-install address (state/desktop-login.token).
+$env:SAND_DEV_LOGIN_EMAIL = (& node (Join-Path $Root "shim\secrets.mjs") desktop-login-email)
+if ($LASTEXITCODE -ne 0 -or -not $env:SAND_DEV_LOGIN_EMAIL) { throw "could not read the sign-in address" }
 New-Item -ItemType Directory -Force $ProfileDir | Out-Null
 $appArgs = @("--user-data-dir=`"$ProfileDir`"")
 if ($NoSandbox) {

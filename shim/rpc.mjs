@@ -34,13 +34,6 @@ export class RpcError extends Error {
   }
 }
 
-// The box host reaches the shim through Docker's host alias; the desktop app
-// uses localhost. Some calls must answer the two differently.
-export function callerOf(req) {
-  const host = String(req.headers?.host ?? "").replace(/:\d+$/, "").toLowerCase();
-  return host === "host.docker.internal" ? "box" : "desktop";
-}
-
 const STRING = new Set(["string"]);
 const BOOL = new Set(["bool"]);
 const NUMBER = new Set(["double", "float", "int32", "uint32", "sint32", "fixed32", "sfixed32", "int64", "uint64", "sint64", "fixed64", "sfixed64"]);
