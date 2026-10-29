@@ -34,3 +34,8 @@ test("only state/box is mounted into the box", () => {
   assert.match(ctl, /STATE_MOUNT="\$ROOT\/state\/box"/);
   assert.doesNotMatch(ctl, /STATE_MOUNT="\$ROOT\/state"$/m);
 });
+
+test("containers without the current layout label are recreated", () => {
+  assert.match(ctl, /--label "grokbot\.layout=\$LAYOUT"/);
+  assert.match(ctl, /grokbot\.layout"\}\}' "\$CONTAINER" 2>\/dev\/null\)" != "\$LAYOUT" \]; then[\s\S]*?docker rm -f "\$CONTAINER"/);
+});

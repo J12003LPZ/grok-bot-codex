@@ -8,6 +8,8 @@ CONTAINER="${GROKBOT_COMPUTER_CONTAINER:-grokbot-computer}"
 SHIM_HTTP_PORT="${HTTP_PORT:-8444}"
 # Random per-install token under state/ (mode 0600); the shim reads the same file.
 GATEWAY_TOKEN="${SAND_GATEWAY_TOKEN:-$(node "$ROOT/shim/secrets.mjs" gateway)}"
+# Bump when the docker run flags below change, so old containers get recreated.
+LAYOUT="state-box-v1"
 IMAGE="${GROKBOT_COMPUTER_IMAGE:-public.ecr.aws/k0i0n2g5/cursorenvironments/universal@sha256:dcac90cba36653f261988b1c88d11b7655493d455c4af0a18c5991ddaa5da020}"
 
 require_docker() {
@@ -52,6 +54,12 @@ wait_ready() {
 
 start() {
   require_docker
+  # Containers made before only state/box was mounted carry the whole state/
+  # directory. They lack this label; recreate them (the volumes are kept).
+  if exists && [ "$(docker inspect -f '{{index .Config.Labels "grokbot.layout"}}' "$CONTAINER" 2>/dev/null)" != "$LAYOUT" ]; then
+    echo "recreating $CONTAINER with the current mounts (volumes are kept)"
+    docker rm -f "$CONTAINER" >/dev/null
+  fi
   if exists; then
     if is_running; then
       echo "computer container already running: $CONTAINER"
@@ -78,6 +86,7 @@ start() {
     if command -v cygpath >/dev/null 2>&1; then STATE_MOUNT="$(cygpath -m "$ROOT/state/box")"; fi
     docker run -d \
       --name "$CONTAINER" \
+      --label "grokbot.layout=$LAYOUT" \
       --restart unless-stopped \
       --shm-size=1g \
       -p 127.0.0.1:1337:1337 \
