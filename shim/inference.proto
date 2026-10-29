@@ -39,6 +39,7 @@ message InferenceStreamRequest {
   repeated string accepted_unadvertised_tool_names = 9;
   string automation_id = 10;
   InferenceReason inference_reason = 11;
+  string conversation_group_id = 12;
 }
 
 message InferenceRequestedModel {

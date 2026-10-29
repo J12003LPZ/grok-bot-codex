@@ -264,7 +264,8 @@ const handle = async (req, res) => {
           });
           let n = 0;
           try {
-            for await (const frameBytes of runSession(reqMsg, { signal: abortController.signal })) {
+            const onModel = (m) => console.log(`[inference] -> ${m}`);
+            for await (const frameBytes of runSession(reqMsg, { signal: abortController.signal, onModel })) {
               res.write(envelope(frameBytes));
               n++;
             }

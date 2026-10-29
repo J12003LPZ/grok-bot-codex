@@ -1,31 +1,56 @@
 {
-  "default": "GPT-5.6-Luna (Codex)",
-  "aliases": {
-    "grok-4.5": "GPT-5.6-Luna (Codex)",
-    "grok-4.5-high": "GPT-5.6-Luna (Codex)",
-    "grok-4.5-xhigh": "GPT-5.6-Luna (Codex)",
-    "grok-4.5-medium": "GPT-5.6-Terra (Codex)",
-    "grok-4.5-fast-high": "GPT-5.6-Sol (Codex)",
-    "grok-4.5-fast-xhigh": "GPT-5.6-Sol (Codex)",
-    "grok-4.5-fast-medium": "GPT-5.6-Sol (Codex)",
-    "grok-4.6": "GPT-5.6-Luna (Codex)"
-  },
-  "fallback": "GPT-5.6-Luna (Codex)",
+  "default": "GPT-6-Luna High (Codex)",
+  "fallback": "GPT-6-Luna High (Codex)",
   "models": {
-    "GPT-5.6-Sol (Codex)": {
+    "GPT-6-Luna High (Codex)": {
       "provider": "codex-oauth",
-      "model": "gpt-5.6-sol",
-      "reasoning_effort": "low"
+      "model": "gpt-6-luna",
+      "reasoning_effort": "high"
     },
-    "GPT-5.6-Terra (Codex)": {
+    "GPT-6-Luna Max (Codex)": {
       "provider": "codex-oauth",
-      "model": "gpt-5.6-terra",
+      "model": "gpt-6-luna",
+      "reasoning_effort": "max"
+    },
+    "GPT-6-Luna Medium (Codex)": {
+      "provider": "codex-oauth",
+      "model": "gpt-6-luna",
+      "reasoning_effort": "medium"
+    },
+    "GPT-6.1-Sol (Codex)": {
+      "provider": "codex-oauth",
+      "model": "gpt-6.1-sol",
+      "reasoning_effort": "medium"
+    },
+    "GPT-6-Sol (Codex)": {
+      "provider": "codex-oauth",
+      "model": "gpt-6-sol",
+      "reasoning_effort": "medium"
+    },
+    "GPT-6.1-Terra (Codex)": {
+      "provider": "codex-oauth",
+      "model": "gpt-6.1-terra",
+      "reasoning_effort": "medium"
+    },
+    "GPT-6-Astra (Codex)": {
+      "provider": "codex-oauth",
+      "model": "gpt-6-astra",
       "reasoning_effort": "medium"
     },
     "GPT-5.6-Luna (Codex)": {
       "provider": "codex-oauth",
       "model": "gpt-5.6-luna",
       "reasoning_effort": "max"
+    },
+    "GPT-5.6-Terra (Codex)": {
+      "provider": "codex-oauth",
+      "model": "gpt-5.6-terra",
+      "reasoning_effort": "medium"
+    },
+    "GPT-5.6-Sol (Codex)": {
+      "provider": "codex-oauth",
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "low"
     }
   }
 }

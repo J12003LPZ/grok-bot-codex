@@ -11,15 +11,15 @@ import { statsigBootstrap } from "../shim/statsig.mjs";
 
 test("the model catalog exposes the configured default", () => {
   const payload = availableModelsPayload();
-  assert.equal(payload.composerModelConfig.defaultModel, "GPT-5.6-Luna (Codex)");
-  assert.ok(payload.models.some((model) => model.name === "GPT-5.6-Luna (Codex)"));
+  assert.equal(payload.composerModelConfig.defaultModel, "GPT-6-Luna High (Codex)");
+  assert.ok(payload.models.some((model) => model.name === "GPT-6-Luna High (Codex)"));
   assert.ok(payload.models.every((model) => model.visibleInRoutedModelView === false));
 });
 
 test("the model catalog survives protobuf encoding", () => {
   const decoded = decodeAvailableModels(encodeAvailableModels());
   assert.equal(decoded.models.length, availableModelsPayload().models.length);
-  assert.equal(decoded.composerModelConfig.defaultModel, "GPT-5.6-Luna (Codex)");
+  assert.equal(decoded.composerModelConfig.defaultModel, "GPT-6-Luna High (Codex)");
 });
 
 test("tracked model configuration contains no inline API keys", () => {

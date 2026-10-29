@@ -268,13 +268,15 @@ test("unsupported models fail closed and log summaries contain no prompt text", 
   assert.doesNotMatch(requestSummary({ modelId: "model", tools: [], messages: [{ role: 1, text: "private prompt" }] }), /private prompt/);
 });
 
-test("the desktop's built-in model ids resolve to Codex models through aliases", () => {
-  const { entry } = resolveModel({ modelId: "grok-4.5" });
-  assert.equal(entry.provider, "codex-oauth");
-  assert.equal(resolveModel({ modelId: "grok-4.5-medium" }).entry.model, "gpt-5.6-terra");
-  assert.equal(resolveModel({ modelId: "grok-4.5-fast-high" }).entry.model, "gpt-5.6-sol");
-  // Any other id the app asks for (its computer-use subagent, ids from newer
-  // versions) still runs on a Codex model through "fallback".
+test("the desktop's built-in model ids run on the default, GPT-6 Luna High", () => {
+  // The app picks its own ids (grok-4.5 for chat, another for its computer-use
+  // subagent, new ones in newer versions); all of them use the default unless
+  // the Bot has its own choice.
+  for (const id of ["grok-4.5", "grok-4.5-medium", "claude-opus-4-8", "grok-99"]) {
+    const { entry } = resolveModel({ modelId: id });
+    assert.equal(entry.model, "gpt-6-luna", id);
+    assert.equal(entry.reasoning_effort, "high", id);
+  }
   for (const id of ["claude-opus-4-8", "grok-99"]) {
     const { entry } = resolveModel({ modelId: id });
     assert.equal(entry.provider, "codex-oauth", id);

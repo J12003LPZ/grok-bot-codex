@@ -114,25 +114,42 @@ an untrusted network.
 
 ## Model configuration
 
-Models shown by the app are declared in `models.json`. The default is GPT-5.6
-Luna. The selected model is checked against the signed-in account's model
-catalog before an inference request.
+Models shown by the app are declared in `models.json`. The default is GPT-6
+Luna on high effort. The selected model is checked against the signed-in
+account's model catalog before an inference request.
 
 ```json
 {
-  "default": "GPT-5.6-Luna (Codex)",
+  "default": "GPT-6-Luna High (Codex)",
+  "fallback": "GPT-6-Luna High (Codex)",
   "models": {
-    "GPT-5.6-Luna (Codex)": {
+    "GPT-6-Luna High (Codex)": {
       "provider": "codex-oauth",
-      "model": "gpt-5.6-luna",
-      "reasoning_effort": "max"
+      "model": "gpt-6-luna",
+      "reasoning_effort": "high"
     }
   }
 }
 ```
 
 `aliases` maps model ids the app requests on its own (such as `grok-4.5`) to
-an entry in `models`.
+an entry in `models`. `fallback` names the entry every other id uses.
+
+### Choosing a model per Bot
+
+Type these in a Bot's chat. The shim answers them itself; they never reach a
+model.
+
+- `!model` lists the models in `models.json`, numbered, and marks the one this
+  Bot uses.
+- `!model 5` or `!model gpt-6-sol` switches this Bot. A unique part of a name
+  works too.
+- `!model default` puts the Bot back on the `models.json` default.
+
+Use `!`, not `/`: Grok Bot opens its own command palette for text that starts
+with `/`. The choice is stored per Bot in `state/bot-models.json` and applies
+to every request of that Bot, including its helpers. A choice whose model is
+later removed from `models.json` falls back to the default.
 
 The model catalog contains only verified OpenAI model IDs. Inference errors,
 authentication failures, and plan limits are returned to Grok Bot; there is no
@@ -297,7 +314,7 @@ How 0.75.8 is wired:
   chat, another id for its computer-use helper). `models.json` maps known ones
   through `aliases` and sends every other id to the `fallback` Codex model.
   Only Codex models are configured; remove `fallback` to make unknown ids
-  fail closed instead.
+  fail closed instead. A Bot's `!model` choice takes precedence over both.
 - The desktop and the box are told apart by signed tokens. The box only sees
   `state/box/` and cannot install plugins or sign in as the desktop.
 
