@@ -18,6 +18,7 @@ import { createBoxController } from "./box.mjs";
 import { createCatalog, createCatalogIndex } from "./catalog.mjs";
 import { PluginStore, pluginHandlers } from "./plugins.mjs";
 import { createConnectors } from "./connectors.mjs";
+import { attachmentHandlers } from "./attachments.mjs";
 
 // Starts the box container on demand (EnsureSandBox). SHIM_BOX_AUTOSTART=0
 // leaves it to computerctl.sh and reports it as always running.
@@ -45,6 +46,7 @@ const handlers = {
   ...clientLogHandlers(process.env.SHIM_CLIENT_LOG),
   ...(catalogIndex ? pluginHandlers(pluginStore, catalogIndex) : {}),
   ...(connectors ? connectors.handlers : {}),
+  ...attachmentHandlers(),
 };
 const rpc = generated ? createRpc({ ...generated, handlers }) : null;
 if (!generated) console.log("no generated/app.proto: run `npm run gen-proto -- <path to proto.cjs>` for agent RPCs");
