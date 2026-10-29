@@ -250,12 +250,26 @@ npm run windows   # shim + box + app
 `npm run windows` runs `scripts/grokbot-windows.ps1`, which:
 
 1. builds `generated/` (message schemas read from the installed app's
-   `app.asar`; nothing from the app is committed);
+   `app.asar`; nothing from the app is committed), again whenever the app is
+   updated;
 2. starts the shim on `http://localhost:8444` (loopback only, log in
    `state/shim.log`);
-3. starts the box container with `computerctl.sh`;
-4. opens Grok Bot in its own profile (`%LOCALAPPDATA%\grokbot-shim\profile`)
-   with a local dev sign-in.
+3. opens Grok Bot in its own profile (`%LOCALAPPDATA%\grokbot-shim\profile`)
+   with a local dev sign-in under a per-install address.
+
+The Bot's Linux computer is the box container (Chrome on an XFCE desktop,
+shown in the app's Computer panel). The shim starts it when the app asks for
+it, e.g. when you message a Bot whose computer is stopped, and creates it on
+first use.
+
+The Marketplace shows the public plugin catalog, fetched anonymously (no
+login or app headers; set `SHIM_PUBLIC_CATALOG=0` to turn it off). Installed
+plugins are kept in `state/plugins.json`; the box clones each one from its
+public git repository. Connectors that need the vendor account
+(`GetAvailableMcpServers`) stay empty.
+
+Checked against Grok Bot 0.75.8 and 0.78.1: sign-in, chat, plugins and
+computer use. After an app update, run `npm run windows` again.
 
 How 0.75.8 is wired:
 
@@ -268,9 +282,13 @@ How 0.75.8 is wired:
   Bot roster (`state/agents.json`) and the inference stream.
 - The app first asks the backend for a server-run Bot. The shim answers
   Unimplemented, so the app creates the Bot on the local box host instead.
-- The app requests its built-in model ids (`grok-4.5` and variants).
-  `models.json` maps them to Codex models through `aliases`; unknown ids still
-  fail closed.
+- The app requests model ids of its own choosing (`grok-4.5` and variants for
+  chat, another id for its computer-use helper). `models.json` maps known ones
+  through `aliases` and sends every other id to the `fallback` Codex model.
+  Only Codex models are configured; remove `fallback` to make unknown ids
+  fail closed instead.
+- The desktop and the box are told apart by signed tokens. The box only sees
+  `state/box/` and cannot install plugins or sign in as the desktop.
 
 The app keeps Chromium's renderer sandbox on. If the Computer preview stays
 blank, run `powershell -File scripts\grokbot-windows.ps1 -NoSandbox`; that
