@@ -18,7 +18,7 @@ import { createBoxController } from "./box.mjs";
 import { createCatalog, createCatalogIndex } from "./catalog.mjs";
 import { PluginStore, pluginHandlers } from "./plugins.mjs";
 import { createConnectors } from "./connectors.mjs";
-import { attachmentHandlers } from "./attachments.mjs";
+import { UPLOAD_PATH_PREFIX, createAttachments } from "./attachments.mjs";
 
 // Starts the box container on demand (EnsureSandBox). SHIM_BOX_AUTOSTART=0
 // leaves it to computerctl.sh and reports it as always running.
@@ -41,12 +41,15 @@ const catalogIndex = generated ? createCatalogIndex(catalog, generated.root) : n
 const connectors = catalogIndex
   ? createConnectors({ plugins: pluginStore, catalog: catalogIndex, redirectUri: `http://127.0.0.1:${HTTP_PORT}${OAUTH_CALLBACK_PATH}` })
   : null;
+// The desktop uploads chat attachments to the shim itself (the main process
+// runs on this machine, so 127.0.0.1 reaches it).
+const attachments = createAttachments({ uploadBase: `http://127.0.0.1:${HTTP_PORT}`, box });
 const handlers = {
   ...agentHandlers(new AgentStore()),
   ...clientLogHandlers(process.env.SHIM_CLIENT_LOG),
   ...(catalogIndex ? pluginHandlers(pluginStore, catalogIndex) : {}),
   ...(connectors ? connectors.handlers : {}),
-  ...attachmentHandlers(),
+  ...attachments.handlers,
 };
 const rpc = generated ? createRpc({ ...generated, handlers }) : null;
 if (!generated) console.log("no generated/app.proto: run `npm run gen-proto -- <path to proto.cjs>` for agent RPCs");
@@ -233,6 +236,11 @@ const handle = async (req, res) => {
         res.writeHead(status, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer" });
         res.end(html);
         out = `connector sign-in ${status}`;
+      } else if (pathname.startsWith(UPLOAD_PATH_PREFIX) && req.method === "PUT") {
+        const { status, text } = attachments.receive(body, pathname.slice(UPLOAD_PATH_PREFIX.length));
+        res.writeHead(status, { "content-type": "text/plain" });
+        res.end(text);
+        out = `attachment upload ${status} ${body.length}B`;
       } else if (pathname === "/health") {
         cors(res);
         res.writeHead(200, { "content-type": "application/json" });

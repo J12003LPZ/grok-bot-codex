@@ -309,11 +309,16 @@ npm run windows:install   # once: every launch of Grok Bot uses the shim
 
 After `windows:install`, open Grok Bot from the Start menu as usual. It sets
 `SAND_BACKEND_URL`, `SAND_DEV_LOGIN` and `SAND_DEV_LOGIN_EMAIL` as user
-environment variables and adds a logon task ("Grok Bot Codex shim") that
-starts the shim. That covers launches the launcher never sees, such as the
-app's own relaunch after it updates itself; without it an updated app comes
-back on the vendor's browser sign-in. `npm run windows:uninstall` removes both.
-The task points at this checkout, so re-run the install if you move it.
+environment variables and adds a task ("Grok Bot Codex shim") that starts the
+shim at logon and checks every minute, so a shim that stopped comes back. That
+covers launches the launcher never sees, such as the app's own relaunch after
+it updates itself; without it an updated app comes back on the vendor's browser
+sign-in. `npm run windows:uninstall` removes both. The task points at this
+checkout, so re-run the install if you move it.
+
+Chat attachments are stored by the shim, not in the cloud: the app uploads to
+the shim, which copies the file into the Bot's folder in the box. If the box is
+off, the shim starts it and the copy waits for it.
 
 `npm run windows` does the same for one launch without installing anything.
 

@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createBoxController, findBash } from "../shim/box.mjs";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createBoxController, findBash, startDetached } from "../shim/box.mjs";
 import { decodeEnsureSandBox, decodeRunState, encodeEnsureSandBox, encodeRunState, boxConfig } from "../shim/sandbox.mjs";
 
 function fake({ docker = "up", healthy = true } = {}) {
@@ -68,6 +71,16 @@ test("box states map to the app's run states", () => {
   assert.equal(decodeRunState(encodeRunState("starting")).state, "STARTING");
   assert.equal(decodeRunState(encodeRunState("absent")).state, "ABSENT");
   assert.throws(() => encodeRunState("bogus"), /unknown box state/);
+});
+
+test("the start script can write to its log", { skip: !findBash() && "no bash" }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "box-"));
+  const script = path.join(dir, "s.sh");
+  fs.writeFileSync(script, "set -e\necho hello\n");
+  const log = path.join(dir, "box.log");
+  const code = await new Promise((resolve) => startDetached(findBash(), log, { script, args: [], onExit: resolve }));
+  assert.equal(code, 0);
+  assert.equal(fs.readFileSync(log, "utf8").trim(), "hello");
 });
 
 test("findBash honours SHIM_BASH and finds Git Bash on Windows", () => {

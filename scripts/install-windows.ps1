@@ -3,7 +3,8 @@
 #   - sets SAND_BACKEND_URL, SAND_DEV_LOGIN and SAND_DEV_LOGIN_EMAIL as user
 #     environment variables (HKCU\Environment),
 #   - registers a per-user logon task that starts the shim (and rebuilds the
-#     schema after app updates) so it is up before the app opens.
+#     schema after app updates) so it is up before the app opens, and checks
+#     every minute after that so a shim that stopped comes back.
 # Nothing needs admin rights. Undo with: install-windows.ps1 -Uninstall
 param(
   [int]$Port = 8444,
@@ -32,11 +33,17 @@ if ($LASTEXITCODE -ne 0 -or -not $email) { throw "could not read the sign-in add
 [Environment]::SetEnvironmentVariable("SAND_DEV_LOGIN_EMAIL", $email, "User")
 
 $launcher = Join-Path $Root "scripts\grokbot-windows.ps1"
-$action = New-ScheduledTaskAction -Execute "powershell.exe" `
-  -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launcher`" -ShimOnly -Port $Port" `
+# conhost --headless: this runs every minute, so no console window may flash.
+$action = New-ScheduledTaskAction -Execute "conhost.exe" `
+  -Argument "--headless powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$launcher`" -ShimOnly -Port $Port" `
   -WorkingDirectory $Root
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+$atLogon = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+# The launcher does nothing when the shim is already up, so repeating it brings
+# back a shim that stopped, within a minute. A separate trigger: repetition on
+# a logon trigger would only begin at the next logon.
+$everyMinute = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 1)
+$trigger = @($atLogon, $everyMinute)
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
 

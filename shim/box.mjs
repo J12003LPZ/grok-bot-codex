@@ -41,14 +41,17 @@ export function findBash(env = process.env, exists = fs.existsSync) {
   return candidates.find((c) => exists(c)) ?? null;
 }
 
-function startDetached(bash, log) {
-  const out = fs.openSync(log, "a");
-  const child = spawn(bash, [path.join(ROOT, "computerctl.sh"), "start"], {
+export function startDetached(bash, log, { script = path.join(ROOT, "computerctl.sh"), args = ["start"], onExit = () => {} } = {}) {
+  // "w", not "a": Git Bash cannot write to an append-only handle, so the
+  // script's first echo fails and it exits before starting anything.
+  const out = fs.openSync(log, "w");
+  const child = spawn(bash, [script, ...args], {
     cwd: ROOT,
     detached: true,
     stdio: ["ignore", out, out],
     windowsHide: true,
   });
+  child.on("exit", onExit);
   child.unref();
   fs.closeSync(out);
   return child;
@@ -62,7 +65,10 @@ export function createBoxController({
   start = () => {
     const bash = findBash();
     if (!bash) throw new Error("Git Bash not found; cannot start the box");
-    return startDetached(bash, path.join(ROOT, "state", "box.log"));
+    const boxLog = path.join(ROOT, "state", "box.log");
+    return startDetached(bash, boxLog, {
+      onExit: (code) => code && console.log(`[box] computerctl.sh start exited ${code}; see ${boxLog}`),
+    });
   },
   cacheMs = 2000,
   startCooldownMs = 120_000,
