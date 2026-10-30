@@ -78,7 +78,7 @@ test("the start script can write to its log", { skip: !findBash() && "no bash" }
   const script = path.join(dir, "s.sh");
   fs.writeFileSync(script, "set -e\necho hello\n");
   const log = path.join(dir, "box.log");
-  const code = await new Promise((resolve) => startDetached(findBash(), log, { script, args: [], onExit: resolve }));
+  const code = await new Promise((resolve) => startDetached(findBash(), log, { script, args: [], onExit: resolve }).ref());
   assert.equal(code, 0);
   assert.equal(fs.readFileSync(log, "utf8").trim(), "hello");
 });

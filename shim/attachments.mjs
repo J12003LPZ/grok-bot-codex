@@ -71,7 +71,7 @@ export function createAttachments({
     sessions.delete(token);
     if (s) removeFile(s);
   };
-  const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms).unref?.());
+  const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   // Wakes the box and copies the file in, retrying until it lands or the
   // session ends. The upload is kept on disk until then, so a box that is off
@@ -153,7 +153,9 @@ export function createAttachments({
       // copy carries on: the message that uses this file wakes the same box,
       // and a box that never starts fails that send with the app's own error.
       s.delivery = deliver(req.uploadToken, s, boxPath);
-      await Promise.race([s.delivery, pause(waitMs)]);
+      let timer;
+      await Promise.race([s.delivery, new Promise((resolve) => (timer = setTimeout(resolve, waitMs)))]);
+      clearTimeout(timer);
       return s.reply;
     },
 
