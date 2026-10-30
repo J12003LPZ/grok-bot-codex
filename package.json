@@ -9,6 +9,7 @@
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "auth": "node shim/auth.mjs",
+    "connector-client": "node shim/connectors.mjs",
     "gen-proto": "node scripts/gen-proto.mjs",
     "windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/grokbot-windows.ps1",
     "windows:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-windows.ps1",

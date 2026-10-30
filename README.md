@@ -160,6 +160,49 @@ Authorization credentials live outside the repository at
 rotating OAuth tokens against OpenAI's documented token endpoint. Do not copy
 the credential file into the repo or send it to anyone.
 
+## Connectors (Connect apps)
+
+Marketplace plugins such as Gmail, Notion or Linear declare remote MCP
+servers. The hosted backend would sign you in to each one and run its tools.
+Here the shim does it:
+
+- Installed plugins' MCP servers are offered to the box host as connectors.
+- Signing in opens the provider's page in your browser. It returns to
+  `http://127.0.0.1:8444/mcp-oauth/callback`, and the shim keeps the tokens
+  in `state/connectors.json`. That file is never mounted into the box. The
+  box host only reaches the tools through the shim.
+- Tool calls go from the shim to the connector with your token.
+
+Ask a Bot to connect the app, or use Connect apps. Most connectors (69 of the
+103 in the catalog) let the shim register itself and need no setup.
+
+Some providers don't allow that: Google (Gmail, Google Calendar, BigQuery),
+Microsoft (Outlook, OneDrive), GitHub, HubSpot, Zoom, X and a few others. For
+those, create an OAuth client of your own once, then save it:
+
+```bash
+npm run connector-client -- <issuer> <client id> <client secret>
+```
+
+The Bot's sign-in message names the exact issuer to use. For Google:
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create
+   or pick a project and enable the Gmail API (Google Calendar API for
+   Calendar).
+2. Under Google Auth Platform, set up the consent screen as External and add
+   your Google account as a test user.
+3. Create an OAuth client of type Desktop app and copy its ID and secret.
+4. Run `npm run connector-client -- https://accounts.google.com <client id> <client secret>`.
+5. Ask the Bot to connect Gmail again. No restart is needed.
+
+A saved client is only used for MCP servers on its provider's own domain
+(`googleapis.com` for Google), so another plugin's server can't get a token
+from it. Add `--hosts a.com,b.com` to allow other domains.
+`npm run connector-client -- <issuer> --remove` deletes a saved client.
+
+Connector requests only go to public HTTPS addresses: never to this machine,
+the box, or the local network.
+
 ## Commands
 
 ```bash
@@ -266,11 +309,16 @@ npm run windows:install   # once: every launch of Grok Bot uses the shim
 
 After `windows:install`, open Grok Bot from the Start menu as usual. It sets
 `SAND_BACKEND_URL`, `SAND_DEV_LOGIN` and `SAND_DEV_LOGIN_EMAIL` as user
-environment variables and adds a logon task ("Grok Bot Codex shim") that
-starts the shim. That covers launches the launcher never sees, such as the
-app's own relaunch after it updates itself; without it an updated app comes
-back on the vendor's browser sign-in. `npm run windows:uninstall` removes both.
-The task points at this checkout, so re-run the install if you move it.
+environment variables and adds a task ("Grok Bot Codex shim") that starts the
+shim at logon and checks every minute, so a shim that stopped comes back. That
+covers launches the launcher never sees, such as the app's own relaunch after
+it updates itself; without it an updated app comes back on the vendor's browser
+sign-in. `npm run windows:uninstall` removes both. The task points at this
+checkout, so re-run the install if you move it.
+
+Chat attachments are stored by the shim, not in the cloud: the app uploads to
+the shim, which copies the file into the Bot's folder in the box. If the box is
+off, the shim starts it and the copy waits for it.
 
 `npm run windows` does the same for one launch without installing anything.
 
@@ -355,6 +403,8 @@ way to tell a preview problem from a Computer problem.
 - Agent prompts, tool schemas, tool results, and screenshots are sent to
   OpenAI's public Responses API using the ChatGPT plan grant.
 - Shim logs omit request headers, prompts, tool arguments, and response bodies.
+- Connector tokens stay in `state/connectors.json` on the host, outside the
+  box, and are only sent to the MCP server they were issued for.
 - The noVNC page provides control of the Computer desktop. Keep it bound to
   loopback.
 
